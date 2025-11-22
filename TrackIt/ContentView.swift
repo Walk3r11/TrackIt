@@ -8,6 +8,7 @@
 import SwiftUI
 import CoreMotion
 import Combine
+import LocalAuthentication
 
 // MARK: - Models
 struct Transaction: Identifiable {
@@ -18,6 +19,17 @@ struct Transaction: Identifiable {
     var category: String
     var date: Date
     var kind: Kind
+}
+
+struct CardInfo: Identifiable {
+    let id = UUID()
+    var nickname: String
+    var brand: String
+    var holder: String
+    var last4: String
+    var expiry: String
+    var limit: Double?
+    var balance: Double?
 }
 
 // MARK: - Motion Manager
@@ -92,23 +104,26 @@ struct ContentView: View {
     @State private var shimmerOffset: CGFloat = -300
     @StateObject private var motion = MotionManager()
     @State private var showAddSheet = false
+    @State private var showAddCardSheet = false
+    @State private var cardsLocked = true
+    @State private var selectedCardIndex = 0
     @State private var transactions: [Transaction] = []
+    @State private var cards: [CardInfo] = []
 
     var body: some View {
-        let income = totalIncome
-        let expenses = totalExpenses
-        let net = netBalance
-        let breakdown = categoryBreakdown
-        let filtered = filteredTransactions
-
         TabView(selection: $selectedTab) {
             dashboard
                 .tag(0)
                 .tabItem { Label("Home", systemImage: "house.fill") }
 
-            PlaceholderTab(title: "Cards")
-                .tag(1)
-                .tabItem { Label("Cards", systemImage: "creditcard.fill") }
+            CardsTab(
+                cards: $cards,
+                locked: $cardsLocked,
+                showAddCardSheet: $showAddCardSheet,
+                unlock: authenticateCards
+            )
+            .tag(1)
+            .tabItem { Label("Cards", systemImage: "creditcard.fill") }
 
             PlaceholderTab(title: "AI")
                 .tag(2)
@@ -134,6 +149,8 @@ struct ContentView: View {
             motion: motion,
             transactions: $transactions,
             showAddSheet: $showAddSheet,
+            cards: $cards,
+            selectedCardIndex: $selectedCardIndex,
             netBalance: net,
             totalIncome: income,
             totalExpenses: expenses,
@@ -141,6 +158,25 @@ struct ContentView: View {
             filteredTransactions: filtered,
             onAdd: { showAddSheet = true }
         )
+    }
+
+    private func authenticateCards() {
+        guard !cards.isEmpty else {
+            cardsLocked = false
+            return
+        }
+
+        let context = LAContext()
+        var error: NSError?
+        if context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) {
+            context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Unlock your cards") { success, _ in
+                DispatchQueue.main.async {
+                    cardsLocked = !success
+                }
+            }
+        } else {
+            cardsLocked = false
+        }
     }
 
     private var periodStart: Date {
@@ -201,6 +237,8 @@ struct HomeDashboard: View {
     @ObservedObject var motion: MotionManager
     @Binding var transactions: [Transaction]
     @Binding var showAddSheet: Bool
+    @Binding var cards: [CardInfo]
+    @Binding var selectedCardIndex: Int
     var netBalance: Double
     var totalIncome: Double
     var totalExpenses: Double
@@ -214,7 +252,9 @@ struct HomeDashboard: View {
 
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 22) {
-                    FinanceHeader(
+                    CardCarousel(
+                        cards: cards,
+                        selectedIndex: $selectedCardIndex,
                         netBalance: netBalance,
                         income: totalIncome,
                         expenses: totalExpenses,
@@ -241,8 +281,8 @@ struct HomeDashboard: View {
                     TransactionsCard(transactions: filteredTransactions, onAdd: onAdd)
                 }
                 .padding(.horizontal)
-                .padding(.top, 24)
-                .padding(.bottom, 40)
+                .padding(.top, 12)
+                .padding(.bottom, 28)
             }
         }
         .onAppear {
@@ -273,6 +313,148 @@ struct PlaceholderTab: View {
                 .background(Palette.card, in: RoundedRectangle(cornerRadius: 16))
                 .overlay(RoundedRectangle(cornerRadius: 16).stroke(Palette.stroke, lineWidth: 1))
         }
+    }
+}
+
+// MARK: - Cards Tab
+struct CardsTab: View {
+    @Binding var cards: [CardInfo]
+    @Binding var locked: Bool
+    @Binding var showAddCardSheet: Bool
+    var unlock: () -> Void
+    private let currencyCode = Locale.current.currency?.identifier ?? "USD"
+
+    var body: some View {
+        ZStack {
+            AnimatedBackground()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack {
+                        Text("Cards")
+                            .font(.largeTitle.bold())
+                            .foregroundColor(Palette.primary)
+                        Spacer()
+                        Button {
+                            showAddCardSheet = true
+                        } label: {
+                            Label("Add Card", systemImage: "plus")
+                                .font(.subheadline.weight(.semibold))
+                                .padding(.vertical, 8)
+                                .padding(.horizontal, 12)
+                                .background(Palette.card, in: Capsule())
+                                .overlay(Capsule().stroke(Palette.stroke, lineWidth: 1))
+                        }
+                        .foregroundColor(Palette.primary)
+                    }
+
+                    if cards.isEmpty {
+                        EmptyStateView(
+                            title: "No cards added",
+                            message: "Add a card to track balances. Numbers are masked and sensitive fields are not stored."
+                        )
+                    } else if locked {
+                        VStack(spacing: 12) {
+                            Text("Secure Access Required")
+                                .font(.headline)
+                                .foregroundColor(Palette.primary)
+                            Text("Authenticate with Face ID/Passcode to view your cards.")
+                                .font(.subheadline)
+                                .foregroundColor(Palette.secondary)
+                            Button {
+                                unlock()
+                            } label: {
+                                Label("Unlock", systemImage: "lock.open.fill")
+                                    .font(.subheadline.weight(.semibold))
+                                    .padding(.vertical, 10)
+                                    .padding(.horizontal, 18)
+                                    .background(Palette.accentAlt, in: Capsule())
+                                    .foregroundColor(.white)
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Palette.card, in: RoundedRectangle(cornerRadius: 16))
+                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Palette.stroke, lineWidth: 1))
+                    } else {
+                        VStack(spacing: 12) {
+                            ForEach(cards) { card in
+                                CardDetailRow(card: card, currencyCode: currencyCode)
+                            }
+                        }
+                    }
+                }
+                .padding()
+            }
+        }
+        .onAppear { unlock() }
+        .sheet(isPresented: $showAddCardSheet) {
+            AddCardSheet { card in
+                cards.append(card)
+                locked = false
+            }
+        }
+    }
+}
+
+private struct CardDetailRow: View {
+    var card: CardInfo
+    var currencyCode: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(card.nickname.isEmpty ? card.brand : card.nickname)
+                    .font(.headline)
+                    .foregroundColor(Palette.primary)
+                Spacer()
+                Text("**** \(card.last4)")
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundColor(Palette.secondary)
+            }
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Holder")
+                        .font(.caption)
+                        .foregroundColor(Palette.secondary)
+                    Text(card.holder)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(Palette.primary)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text("Exp.")
+                        .font(.caption)
+                        .foregroundColor(Palette.secondary)
+                    Text(card.expiry)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(Palette.primary)
+                }
+            }
+            if let balance = card.balance {
+                HStack {
+                    Text("Balance")
+                        .foregroundColor(Palette.secondary)
+                    Spacer()
+                    Text(balance, format: .currency(code: currencyCode))
+                        .foregroundColor(Palette.primary)
+                        .font(.subheadline.weight(.semibold))
+                }
+            }
+            if let limit = card.limit {
+                HStack {
+                    Text("Limit")
+                        .foregroundColor(Palette.secondary)
+                    Spacer()
+                    Text(limit, format: .currency(code: currencyCode))
+                        .foregroundColor(Palette.primary)
+                        .font(.subheadline.weight(.semibold))
+                }
+            }
+        }
+        .padding()
+        .background(Palette.card, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Palette.stroke, lineWidth: 1))
     }
 }
 
@@ -317,8 +499,148 @@ struct AnimatedBackground: View {
     }
 }
 
-// MARK: - Header / Hero
-struct FinanceHeader: View {
+// MARK: - Header / Carousel
+struct CardCarousel: View {
+    var cards: [CardInfo]
+    @Binding var selectedIndex: Int
+    var netBalance: Double
+    var income: Double
+    var expenses: Double
+    var shimmerOffset: CGFloat
+    @ObservedObject var motion: MotionManager
+    var onAdd: () -> Void
+    private let currencyCode = Locale.current.currency?.identifier ?? "USD"
+
+    var body: some View {
+        let totalPages = 1 + cards.count
+
+        VStack(spacing: 8) {
+            TabView(selection: $selectedIndex) {
+                OverviewHeader(
+                    netBalance: netBalance,
+                    income: income,
+                    expenses: expenses,
+                    shimmerOffset: shimmerOffset,
+                    motion: motion,
+                    onAdd: onAdd
+                )
+                .tag(0)
+
+                ForEach(Array(cards.enumerated()), id: \.element.id) { idx, card in
+                    CardHeader(card: card, shimmerOffset: shimmerOffset, motion: motion)
+                        .tag(idx + 1)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .frame(height: 240)
+            .padding(.vertical, 2)
+
+            HStack(spacing: 6) {
+                ForEach(0..<totalPages, id: \.self) { idx in
+                    Circle()
+                        .fill(idx == selectedIndex ? Palette.primary.opacity(0.4) : Palette.primary.opacity(0.15))
+                        .frame(width: 8, height: 8)
+                }
+            }
+        }
+    }
+}
+
+private struct CardHeader: View {
+    var card: CardInfo
+    var shimmerOffset: CGFloat
+    @ObservedObject var motion: MotionManager
+    private let currencyCode = Locale.current.currency?.identifier ?? "USD"
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 24)
+                .fill(
+                    LinearGradient(
+                        colors: [Palette.primary.opacity(0.9), Palette.accentAlt],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay(RoundedRectangle(cornerRadius: 24).stroke(Palette.stroke, lineWidth: 1))
+                .shadow(color: Palette.accentAlt.opacity(0.25), radius: 18, x: 0, y: 12)
+                .overlay(
+                    LinearGradient(
+                        colors: [.white.opacity(0.0), .white.opacity(0.25), .white.opacity(0.0)],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .mask(RoundedRectangle(cornerRadius: 24))
+                    .offset(x: shimmerOffset)
+                    .animation(.easeInOut(duration: 6).repeatForever(autoreverses: false), value: shimmerOffset)
+                )
+                .rotation3DEffect(.degrees(motion.pitch * 6), axis: (x: 1, y: 0, z: 0))
+                .rotation3DEffect(.degrees(motion.roll * -3), axis: (x: 0, y: 1, z: 0))
+
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text(card.nickname.isEmpty ? card.brand : card.nickname)
+                        .font(.headline)
+                        .foregroundColor(.white)
+                    Spacer()
+                    Text(card.brand)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(.white.opacity(0.9))
+                }
+
+                Text("**** \(card.last4)")
+                    .font(.title2.monospacedDigit().weight(.semibold))
+                    .foregroundColor(.white)
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Holder")
+                            .font(.caption)
+                            .foregroundColor(.white.opacity(0.7))
+                        Text(card.holder)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundColor(.white)
+                    }
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Text("Exp.")
+                            .font(.caption)
+                            .foregroundColor(.white.opacity(0.7))
+                        Text(card.expiry)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundColor(.white)
+                    }
+                }
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Balance")
+                            .font(.caption2)
+                            .foregroundColor(.white.opacity(0.7))
+                        Text(card.balance ?? 0, format: .currency(code: currencyCode))
+                            .font(.headline.weight(.bold))
+                            .foregroundColor(.white)
+                    }
+                    Spacer()
+                    if let limit = card.limit {
+                        VStack(alignment: .trailing, spacing: 4) {
+                            Text("Limit")
+                                .font(.caption2)
+                                .foregroundColor(.white.opacity(0.7))
+                            Text(limit, format: .currency(code: currencyCode))
+                                .font(.headline.weight(.bold))
+                                .foregroundColor(.white)
+                        }
+                    }
+                }
+            }
+            .padding(18)
+        }
+        .padding(.horizontal, 10)
+    }
+}
+
+private struct OverviewHeader: View {
     var netBalance: Double
     var income: Double
     var expenses: Double
@@ -329,7 +651,7 @@ struct FinanceHeader: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 26)
+            RoundedRectangle(cornerRadius: 22)
                 .fill(
                     LinearGradient(
                         colors: [
@@ -341,7 +663,7 @@ struct FinanceHeader: View {
                     )
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 26)
+                    RoundedRectangle(cornerRadius: 22)
                         .stroke(Palette.stroke, lineWidth: 1.2)
                 )
                 .shadow(color: Palette.accent.opacity(0.35), radius: 18, x: 0, y: 12)
@@ -351,14 +673,14 @@ struct FinanceHeader: View {
                         startPoint: .leading,
                         endPoint: .trailing
                     )
-                    .mask(RoundedRectangle(cornerRadius: 26))
+                    .mask(RoundedRectangle(cornerRadius: 22))
                     .offset(x: shimmerOffset)
                     .animation(.easeInOut(duration: 6).repeatForever(autoreverses: false), value: shimmerOffset)
                 )
                 .rotation3DEffect(.degrees(motion.pitch * 6), axis: (x: 1, y: 0, z: 0))
-                .rotation3DEffect(.degrees(motion.roll * -6), axis: (x: 0, y: 1, z: 0))
+                .rotation3DEffect(.degrees(motion.roll * -4), axis: (x: 0, y: 1, z: 0))
 
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 14) {
                 HStack {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("TrackIt")
@@ -380,19 +702,13 @@ struct FinanceHeader: View {
                     .foregroundColor(.white)
                 }
 
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 6) {
                     Text("Net Balance")
                         .font(.caption)
                         .foregroundColor(.white.opacity(0.8))
                     Text(netBalance, format: .currency(code: currencyCode))
                         .font(.system(size: 42, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
-                    Text(income >= expenses ? "Cash flow positive" : "Cash flow negative")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundColor(income >= expenses ? .white.opacity(0.85) : .white.opacity(0.85))
-                        .padding(.vertical, 6)
-                        .padding(.horizontal, 10)
-                        .background(.white.opacity(0.14), in: Capsule())
                 }
 
                 HStack(spacing: 12) {
@@ -400,7 +716,8 @@ struct FinanceHeader: View {
                     PillMetric(title: "Expenses", value: expenses, icon: "arrow.up.forward", tint: Palette.card)
                 }
             }
-            .padding(22)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 18)
         }
     }
 }
@@ -753,7 +1070,76 @@ struct AddTransactionSheet: View {
     }
 }
 
+struct AddCardSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    var onSave: (CardInfo) -> Void
+    @State private var nickname: String = ""
+    @State private var brand: String = ""
+    @State private var holder: String = ""
+    @State private var number: String = ""
+    @State private var expiry: String = ""
+    @State private var cvc: String = ""
+    @State private var limitText: String = ""
+    @State private var balanceText: String = ""
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section(header: Text("Card details")) {
+                    TextField("Nickname (optional)", text: $nickname)
+                    TextField("Brand (Visa, MasterCard...)", text: $brand)
+                    TextField("Cardholder name", text: $holder)
+                    SecureField("Card number", text: $number)
+                        .keyboardType(.numberPad)
+                    TextField("Expiry (MM/YY)", text: $expiry)
+                    SecureField("CVC", text: $cvc)
+                        .keyboardType(.numberPad)
+                }
+                Section(header: Text("Balance")) {
+                    TextField("Current balance", text: $balanceText)
+                        .keyboardType(.decimalPad)
+                    TextField("Limit", text: $limitText)
+                        .keyboardType(.decimalPad)
+                }
+                Section(footer: Text("For security, only the last 4 digits are stored. Full card number and CVC are discarded after saving.")) {
+                    EmptyView()
+                }
+            }
+            .navigationTitle("Add Card")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { save() }
+                        .disabled(!canSave)
+                }
+            }
+        }
+    }
+
+    private var canSave: Bool {
+        let trimmedNumber = number.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedNumber.count >= 4 && !holder.isEmpty && !brand.isEmpty && !expiry.isEmpty
+    }
+
+    private func save() {
+        let trimmedNumber = number.trimmingCharacters(in: .whitespacesAndNewlines)
+        let last4 = String(trimmedNumber.suffix(4))
+        let card = CardInfo(
+            nickname: nickname,
+            brand: brand,
+            holder: holder,
+            last4: last4,
+            expiry: expiry,
+            limit: Double(limitText),
+            balance: Double(balanceText)
+        )
+        onSave(card)
+        dismiss()
+    }
+}
+
 #Preview {
     ContentView()
-        .preferredColorScheme(.dark)
 }
