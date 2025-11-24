@@ -8,6 +8,7 @@
 
 /* Begin PBXFileReference section */
 		9D73C5BD2EBBE01C00F69DB0 /* TrackIt.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TrackIt.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		9D8A4A042ED45CD800C46EB2 /* TrackIt.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = TrackIt.xcodeproj; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -32,6 +33,7 @@
 		9D73C5B42EBBE01C00F69DB0 = {
 			isa = PBXGroup;
 			children = (
+				9D8A4A042ED45CD800C46EB2 /* TrackIt.xcodeproj */,
 				9D73C5BF2EBBE01C00F69DB0 /* TrackIt */,
 				9D73C5BE2EBBE01C00F69DB0 /* Products */,
 			);
@@ -42,6 +44,11 @@
 			children = (
 				9D73C5BD2EBBE01C00F69DB0 /* TrackIt.app */,
 			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		9D8A4A0D2ED45D0A00C46EB2 /* Products */ = {
+			isa = PBXGroup;
 			name = Products;
 			sourceTree = "<group>";
 		};
@@ -97,6 +104,12 @@
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 9D73C5BE2EBBE01C00F69DB0 /* Products */;
 			projectDirPath = "";
+			projectReferences = (
+				{
+					ProductGroup = 9D8A4A0D2ED45D0A00C46EB2 /* Products */;
+					ProjectRef = 9D8A4A042ED45CD800C46EB2 /* TrackIt.xcodeproj */;
+				},
+			);
 			projectRoot = "";
 			targets = (
 				9D73C5BC2EBBE01C00F69DB0 /* TrackIt */,
@@ -255,7 +268,11 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 8K523C6KA4;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_RESOURCE_ACCESS_CAMERA = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "This app requires your camera.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "This app requires FaceID.";
+				INFOPLIST_KEY_NSMainCameraUsageDescription = "This app requires your camera.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -287,7 +304,11 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 8K523C6KA4;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_RESOURCE_ACCESS_CAMERA = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "This app requires your camera.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "This app requires FaceID.";
+				INFOPLIST_KEY_NSMainCameraUsageDescription = "This app requires your camera.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

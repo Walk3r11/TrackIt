@@ -1,110 +1,17 @@
-//
-//  ContentView.swift
-//  TrackIt
-//
-//  Created by Konstantin Nikolow on 5.11.25.
-//
 
 import SwiftUI
-import CoreMotion
-import Combine
 import LocalAuthentication
-
-// MARK: - Models
-struct Transaction: Identifiable {
-    enum Kind: String, CaseIterable { case income, expense }
-
-    let id = UUID()
-    var amount: Double
-    var category: String
-    var date: Date
-    var kind: Kind
-}
-
-struct CardInfo: Identifiable {
-    let id = UUID()
-    var nickname: String
-    var brand: String
-    var holder: String
-    var last4: String
-    var expiry: String
-    var limit: Double?
-    var balance: Double?
-}
-
-// MARK: - Motion Manager
-@MainActor
-final class MotionManager: ObservableObject {
-    private let motion = CMMotionManager()
-    @Published var pitch: Double = 0
-    @Published var roll: Double = 0
-    private var basePitch: Double?
-    private var baseRoll: Double?
-
-    init() {
-        #if targetEnvironment(simulator)
-        #else
-        if motion.isDeviceMotionAvailable {
-            motion.deviceMotionUpdateInterval = 1 / 60
-            motion.startDeviceMotionUpdates(to: .main) { [weak self] data, _ in
-                guard let self, let data = data else { return }
-                let currentPitch = data.attitude.pitch
-                let currentRoll = data.attitude.roll
-                if self.basePitch == nil { self.basePitch = currentPitch }
-                if self.baseRoll == nil { self.baseRoll = currentRoll }
-                self.pitch = currentPitch - (self.basePitch ?? 0)
-                self.roll = currentRoll - (self.baseRoll ?? 0)
-            }
-        }
-        #endif
-    }
-
-    deinit {
-        #if !targetEnvironment(simulator)
-        motion.stopDeviceMotionUpdates()
-        #endif
-    }
-}
-
-// MARK: - Period Enum
-enum Period: String, CaseIterable {
-    case daily, weekly, biweekly, monthly, quarterly, semiannual, nineMonth, yearly
-    var title: String {
-        switch self {
-        case .daily: "Today"
-        case .weekly: "Past 7 Days"
-        case .biweekly: "Past 14 Days"
-        case .monthly: "Past Month"
-        case .quarterly: "Past 3 Months"
-        case .semiannual: "Past 6 Months"
-        case .nineMonth: "Past 9 Months"
-        case .yearly: "Past Year"
-        }
-    }
-}
-
-// MARK: - Palette
-private enum Palette {
-    static let backgroundTop = Color(red: 0.99, green: 0.96, blue: 0.92)
-    static let backgroundMid = Color(red: 0.95, green: 0.93, blue: 0.97)
-    static let backgroundBottom = Color(red: 0.90, green: 0.93, blue: 0.98)
-    static let card = Color.white.opacity(0.92)
-    static let stroke = Color.black.opacity(0.06)
-    static let primary = Color(red: 0.1, green: 0.11, blue: 0.2)
-    static let secondary = Color.black.opacity(0.55)
-    static let accent = Color(red: 0.98, green: 0.56, blue: 0.27)
-    static let accentAlt = Color(red: 0.16, green: 0.55, blue: 0.67)
-    static let mutedFill = Color.black.opacity(0.03)
-}
 
 // MARK: - Content View
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var selectedTab = 0
     @State private var selectedPeriod: Period = .daily
     @State private var shimmerOffset: CGFloat = -300
     @StateObject private var motion = MotionManager()
     @State private var showAddSheet = false
     @State private var showAddCardSheet = false
+    @State private var selectedCardDetail: CardInfo?
     @State private var cardsLocked = true
     @State private var selectedCardIndex = 0
     @State private var transactions: [Transaction] = []
@@ -120,7 +27,8 @@ struct ContentView: View {
                 cards: $cards,
                 locked: $cardsLocked,
                 showAddCardSheet: $showAddCardSheet,
-                unlock: authenticateCards
+                unlock: authenticateCards,
+                onSelect: { card in selectedCardDetail = card }
             )
             .tag(1)
             .tabItem { Label("Cards", systemImage: "creditcard.fill") }
@@ -134,6 +42,35 @@ struct ContentView: View {
                 .tabItem { Label("Settings", systemImage: "gearshape.fill") }
         }
         .preferredColorScheme(.light)
+        .onAppear {
+            loadPersistedData()
+        }
+        .onChange(of: cards) { _, _ in
+            saveCards()
+        }
+        .onChange(of: transactions) { _, _ in
+            saveTransactions()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .background || newPhase == .inactive {
+                cardsLocked = true
+            }
+        }
+        .sheet(item: $selectedCardDetail) { card in
+            CardDetailSheet(
+                card: card,
+                onUpdate: { updated in
+                    if let idx = cards.firstIndex(where: { $0.id == updated.id }) {
+                        cards[idx] = updated
+                    }
+                    selectedCardDetail = nil
+                },
+                onDelete: {
+                    cards.removeAll { $0.id == card.id }
+                    selectedCardDetail = nil
+                }
+            )
+        }
     }
 
     private var dashboard: some View {
@@ -227,6 +164,24 @@ struct ContentView: View {
             .reduce(into: [:]) { partialResult, transaction in
                 partialResult[transaction.category, default: 0] += transaction.amount
             }
+    }
+
+    private func loadPersistedData() {
+        if let storedCards: [CardInfo] = SecureStore.load([CardInfo].self, key: "cards") {
+            cards = storedCards
+            if !storedCards.isEmpty { cardsLocked = true }
+        }
+        if let storedTransactions: [Transaction] = SecureStore.load([Transaction].self, key: "transactions") {
+            transactions = storedTransactions
+        }
+    }
+
+    private func saveCards() {
+        SecureStore.save(cards, key: "cards")
+    }
+
+    private func saveTransactions() {
+        SecureStore.save(transactions, key: "transactions")
     }
 }
 
@@ -322,6 +277,7 @@ struct CardsTab: View {
     @Binding var locked: Bool
     @Binding var showAddCardSheet: Bool
     var unlock: () -> Void
+    var onSelect: (CardInfo) -> Void
     private let currencyCode = Locale.current.currency?.identifier ?? "USD"
 
     var body: some View {
@@ -380,6 +336,7 @@ struct CardsTab: View {
                         VStack(spacing: 12) {
                             ForEach(cards) { card in
                                 CardDetailRow(card: card, currencyCode: currencyCode)
+                                    .onTapGesture { onSelect(card) }
                             }
                         }
                     }
@@ -1021,124 +978,6 @@ struct ProgressRow: View {
     }
 }
 
-// MARK: - Add Transaction Sheet
-struct AddTransactionSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    var onSave: (Transaction) -> Void
-    @State private var amountText: String = ""
-    @State private var category: String = ""
-    @State private var kind: Transaction.Kind = .expense
-    @State private var date: Date = .now
-
-    var body: some View {
-        NavigationView {
-            Form {
-                Section(header: Text("Details")) {
-                    TextField("Amount", text: $amountText)
-                        .keyboardType(.decimalPad)
-                    TextField("Category", text: $category)
-                    Picker("Type", selection: $kind) {
-                        Text("Expense").tag(Transaction.Kind.expense)
-                        Text("Income").tag(Transaction.Kind.income)
-                    }
-                    DatePicker("Date", selection: $date, displayedComponents: .date)
-                }
-            }
-            .navigationTitle("Add Transaction")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { save() }
-                        .disabled(!canSave)
-                }
-            }
-        }
-    }
-
-    private var canSave: Bool {
-        Double(amountText) != nil && !category.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private func save() {
-        guard let amount = Double(amountText) else { return }
-        let trimmedCategory = category.trimmingCharacters(in: .whitespacesAndNewlines)
-        let transaction = Transaction(amount: amount, category: trimmedCategory, date: date, kind: kind)
-        onSave(transaction)
-        dismiss()
-    }
-}
-
-struct AddCardSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    var onSave: (CardInfo) -> Void
-    @State private var nickname: String = ""
-    @State private var brand: String = ""
-    @State private var holder: String = ""
-    @State private var number: String = ""
-    @State private var expiry: String = ""
-    @State private var cvc: String = ""
-    @State private var limitText: String = ""
-    @State private var balanceText: String = ""
-
-    var body: some View {
-        NavigationView {
-            Form {
-                Section(header: Text("Card details")) {
-                    TextField("Nickname (optional)", text: $nickname)
-                    TextField("Brand (Visa, MasterCard...)", text: $brand)
-                    TextField("Cardholder name", text: $holder)
-                    SecureField("Card number", text: $number)
-                        .keyboardType(.numberPad)
-                    TextField("Expiry (MM/YY)", text: $expiry)
-                    SecureField("CVC", text: $cvc)
-                        .keyboardType(.numberPad)
-                }
-                Section(header: Text("Balance")) {
-                    TextField("Current balance", text: $balanceText)
-                        .keyboardType(.decimalPad)
-                    TextField("Limit", text: $limitText)
-                        .keyboardType(.decimalPad)
-                }
-                Section(footer: Text("For security, only the last 4 digits are stored. Full card number and CVC are discarded after saving.")) {
-                    EmptyView()
-                }
-            }
-            .navigationTitle("Add Card")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { save() }
-                        .disabled(!canSave)
-                }
-            }
-        }
-    }
-
-    private var canSave: Bool {
-        let trimmedNumber = number.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmedNumber.count >= 4 && !holder.isEmpty && !brand.isEmpty && !expiry.isEmpty
-    }
-
-    private func save() {
-        let trimmedNumber = number.trimmingCharacters(in: .whitespacesAndNewlines)
-        let last4 = String(trimmedNumber.suffix(4))
-        let card = CardInfo(
-            nickname: nickname,
-            brand: brand,
-            holder: holder,
-            last4: last4,
-            expiry: expiry,
-            limit: Double(limitText),
-            balance: Double(balanceText)
-        )
-        onSave(card)
-        dismiss()
-    }
-}
 
 #Preview {
     ContentView()
