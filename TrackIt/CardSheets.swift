@@ -3,7 +3,9 @@ import VisionKit
 
 struct AddTransactionSheet: View {
     @Environment(\.dismiss) private var dismiss
+    var categories: [String]
     var onSave: (Transaction) -> Void
+    var onNewCategory: (String) -> Void
     @State private var amountText: String = ""
     @State private var category: String = ""
     @State private var kind: Transaction.Kind = .expense
@@ -15,7 +17,27 @@ struct AddTransactionSheet: View {
                 Section(header: Text("Details")) {
                     TextField("Amount", text: $amountText)
                         .keyboardType(.decimalPad)
-                    TextField("Category", text: $category)
+                    VStack(alignment: .leading, spacing: 8) {
+                        TextField("Category", text: $category)
+                        if !categories.isEmpty {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    ForEach(categories, id: \.self) { item in
+                                        Button {
+                                            category = item
+                                        } label: {
+                                            Text(item)
+                                                .font(.caption.weight(.semibold))
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 8)
+                                                .background(Color.secondary.opacity(0.12), in: Capsule())
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                            }
+                        }
+                    }
                     Picker("Type", selection: $kind) {
                         Text("Expense").tag(Transaction.Kind.expense)
                         Text("Income").tag(Transaction.Kind.income)
@@ -41,10 +63,16 @@ struct AddTransactionSheet: View {
     }
 
     private func save() {
-        guard let amount = Double(amountText) else { return }
+        guard let rawAmount = Double(amountText) else { return }
+        let amount = kind == .income ? abs(rawAmount) : -abs(rawAmount)
         let trimmedCategory = category.trimmingCharacters(in: .whitespacesAndNewlines)
         let transaction = Transaction(amount: amount, category: trimmedCategory, date: date, kind: kind)
-        onSave(transaction)
+        withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+            if !categories.contains(where: { $0.caseInsensitiveCompare(trimmedCategory) == .orderedSame }) {
+                onNewCategory(trimmedCategory)
+            }
+            onSave(transaction)
+        }
         dismiss()
     }
 }
@@ -53,13 +81,10 @@ struct AddCardSheet: View {
     @Environment(\.dismiss) private var dismiss
     var onSave: (CardInfo) -> Void
     @State private var nickname: String = ""
-    @State private var brand: String = ""
-    @State private var holder: String = ""
     @State private var number: String = ""
-    @State private var expiry: String = ""
-    @State private var cvc: String = ""
     @State private var limitText: String = ""
     @State private var balanceText: String = ""
+    @State private var tagsText: String = ""
     @State private var framePulse = false
     @State private var scanResultHandled = false
     @State private var autoSaveTriggered = false
@@ -68,17 +93,8 @@ struct AddCardSheet: View {
         NavigationView {
             Form {
                 Section(header: Text("Card details")) {
-                    TextField("Nickname (optional)", text: $nickname)
-                    TextField("Brand (Visa, MasterCard...)", text: $brand)
-                    TextField("Cardholder name", text: $holder)
-                    SecureField("Card number", text: $number)
-                        .keyboardType(.numberPad)
-                    TextField("Expiry (MM/YY)", text: $expiry)
-                        .keyboardType(.numberPad)
-                        .onChange(of: expiry) { _, newValue in
-                            expiry = formatExpiryInput(newValue)
-                        }
-                    SecureField("CVC", text: $cvc)
+                    TextField("Nickname", text: $nickname)
+                    SecureField("Card number (optional)", text: $number)
                         .keyboardType(.numberPad)
                 }
                 Section {
@@ -101,6 +117,7 @@ struct AddCardSheet: View {
                         .keyboardType(.decimalPad)
                     TextField("Limit", text: $limitText)
                         .keyboardType(.decimalPad)
+                    TextField("Tags (comma separated)", text: $tagsText)
                 }
                 Section(footer: Text("For security, only the last 4 digits are stored. Full card number and CVC are discarded after saving.")) {
                     EmptyView()
@@ -197,36 +214,27 @@ struct AddCardSheet: View {
 
     private var canSave: Bool {
         let digits = number.filter(\.isNumber)
-        return digits.count >= 4 && !holder.isEmpty && !brand.isEmpty && !expiry.isEmpty
+        let hasNumber = digits.count >= 4 || digits.isEmpty
+        return hasNumber && !nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func handleScanResult(scannedNumber: String, scannedExpiry: String?, scannedName: String?) {
         guard !scanResultHandled else { return }
         scanResultHandled = true
         number = scannedNumber
-        if let scannedExpiry { expiry = scannedExpiry }
-        if let scannedName { holder = scannedName }
-        if brand.isEmpty, let guessed = guessBrand(from: scannedNumber) {
-            brand = guessed
-        }
-        showScanner = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            attemptAutoSave()
-        }
+        // Keep scanner open until user closes; no auto-dismiss
     }
 
     private func save() {
         let digits = number.filter(\.isNumber)
-        let last4 = String(digits.suffix(4))
+        let last4 = digits.isEmpty ? "0000" : String(digits.suffix(4))
         let card = CardInfo(
-            nickname: nickname,
-            brand: brand,
-            holder: holder,
-            fullNumber: formatFullNumber(digits),
+            nickname: nickname.trimmingCharacters(in: .whitespacesAndNewlines),
+            fullNumber: digits.isEmpty ? nil : formatFullNumber(digits),
             last4: last4,
-            expiry: expiry,
             limit: Double(limitText),
-            balance: Double(balanceText)
+            balance: Double(balanceText),
+            tags: tagsText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         )
         onSave(card)
         dismiss()
@@ -234,7 +242,6 @@ struct AddCardSheet: View {
 
     private func attemptAutoSave() {
         guard !autoSaveTriggered else { return }
-        if brand.isEmpty { brand = "Card" }
         guard canSave else { return }
         autoSaveTriggered = true
         save()
@@ -245,9 +252,6 @@ struct AddCardSheet: View {
         guard let first = digits.first else { return nil }
         if first == "4" { return "Visa" }
         if digits.hasPrefix("34") || digits.hasPrefix("37") { return "American Express" }
-        if let prefix = Int(digits.prefix(2)), (51...55).contains(prefix) { return "Mastercard" }
-        if let prefix4 = Int(digits.prefix(4)), (2221...2720).contains(prefix4) { return "Mastercard" }
-        if digits.hasPrefix("6") { return "Discover" }
         return nil
     }
 }
@@ -259,24 +263,20 @@ struct CardDetailSheet: View {
     var onDelete: () -> Void
 
     @State private var nickname: String = ""
-    @State private var brand: String = ""
-    @State private var holder: String = ""
     @State private var fullNumber: String = ""
-    @State private var expiry: String = ""
     @State private var limitText: String = ""
     @State private var balanceText: String = ""
+    @State private var tagsText: String = ""
 
     init(card: CardInfo, onUpdate: @escaping (CardInfo) -> Void, onDelete: @escaping () -> Void) {
         self.card = card
         self.onUpdate = onUpdate
         self.onDelete = onDelete
         _nickname = State(initialValue: card.nickname)
-        _brand = State(initialValue: card.brand)
-        _holder = State(initialValue: card.holder)
         _fullNumber = State(initialValue: card.fullNumber ?? card.last4)
-        _expiry = State(initialValue: card.expiry)
         _limitText = State(initialValue: card.limit.map { String($0) } ?? "")
         _balanceText = State(initialValue: card.balance.map { String($0) } ?? "")
+        _tagsText = State(initialValue: (card.tags ?? []).joined(separator: ", "))
     }
 
     var body: some View {
@@ -284,15 +284,8 @@ struct CardDetailSheet: View {
             Form {
                 Section(header: Text("Card details")) {
                     TextField("Nickname", text: $nickname)
-                    TextField("Brand", text: $brand)
-                    TextField("Cardholder name", text: $holder)
-                    TextField("Card number", text: $fullNumber)
+                    TextField("Card number (optional)", text: $fullNumber)
                         .keyboardType(.numberPad)
-                    TextField("Expiry (MM/YY)", text: $expiry)
-                        .keyboardType(.numberPad)
-                        .onChange(of: expiry) { _, newValue in
-                            expiry = formatExpiryInput(newValue)
-                        }
                 }
 
                 Section(header: Text("Balance")) {
@@ -300,6 +293,7 @@ struct CardDetailSheet: View {
                         .keyboardType(.decimalPad)
                     TextField("Limit", text: $limitText)
                         .keyboardType(.decimalPad)
+                    TextField("Tags (comma separated)", text: $tagsText)
                 }
 
                 Section {
@@ -330,24 +324,24 @@ struct CardDetailSheet: View {
 
     private var canSave: Bool {
         let digits = fullNumber.filter(\.isNumber)
-        return !brand.isEmpty && !holder.isEmpty && !expiry.isEmpty && digits.count >= 4
+        let hasNumber = digits.count >= 4 || digits.isEmpty
+        return hasNumber && !nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func save() {
         let digits = fullNumber.filter(\.isNumber)
-        let trimmedLast4 = String(digits.suffix(4))
+        let trimmedLast4 = digits.isEmpty ? "0000" : String(digits.suffix(4))
         let updated = CardInfo(
             id: card.id,
-            nickname: nickname,
-            brand: brand,
-            holder: holder,
-            fullNumber: formatFullNumber(digits),
+            nickname: nickname.trimmingCharacters(in: .whitespacesAndNewlines),
+            fullNumber: digits.isEmpty ? nil : formatFullNumber(digits),
             last4: trimmedLast4,
-            expiry: expiry,
             limit: Double(limitText),
-            balance: Double(balanceText)
+            balance: Double(balanceText),
+            tags: tagsText.split(separator: ",").map { $0.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) }.filter { !$0.isEmpty }
         )
         onUpdate(updated)
         dismiss()
     }
 }
+

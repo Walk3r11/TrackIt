@@ -14,13 +14,11 @@ struct Transaction: Identifiable, Codable, Equatable {
 struct CardInfo: Identifiable, Codable, Equatable {
     var id: UUID = UUID()
     var nickname: String
-    var brand: String
-    var holder: String
     var fullNumber: String?
     var last4: String
-    var expiry: String
     var limit: Double?
     var balance: Double?
+    var tags: [String]?
 }
 
 enum Period: String, CaseIterable {

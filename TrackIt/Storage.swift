@@ -28,6 +28,15 @@ enum SecureStore {
         guard status == errSecSuccess, let data = result as? Data else { return nil }
         return try? JSONDecoder().decode(type, from: data)
     }
+
+    static func delete(key: String) {
+        let q = query(for: key)
+        SecItemDelete(q as CFDictionary)
+    }
+
+    static func delete(keys: [String]) {
+        keys.forEach { delete(key: $0) }
+    }
 }
 
 func formatExpiryInput(_ text: String) -> String {
