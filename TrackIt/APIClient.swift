@@ -23,7 +23,7 @@ struct APIClient {
         if let override = ProcessInfo.processInfo.environment["API_BASE_URL"], let url = URL(string: override) {
             return url
         }
-        return URL(string: "https://trackit-dashboard-git-tests-walk3r11s-projects.vercel.app")
+        return URL(string: "https://trackit-dashboard-beryl.vercel.app")
     }
 
     private func issueToken(email: String, password: String) async throws -> String {
@@ -115,8 +115,6 @@ struct APIClient {
         let body: [String: Any] = [
             "userId": userId,
             "nickname": card.nickname,
-            "last4": card.last4,
-            "fullNumber": card.fullNumber ?? NSNull(),
             "limit": card.limit ?? 0,
             "balance": card.balance ?? 0,
             "tags": card.tags ?? []
@@ -141,9 +139,7 @@ struct APIClient {
             "limit": card.limit ?? 0,
             "balance": card.balance ?? 0,
             "nickname": card.nickname,
-            "tags": card.tags ?? [],
-            "last4": card.last4,
-            "fullNumber": card.fullNumber ?? NSNull()
+            "tags": card.tags ?? []
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -163,6 +159,20 @@ struct APIClient {
         guard let url = components?.url else { throw APIError.invalidURL }
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            let message = String(data: data, encoding: .utf8) ?? "Request failed"
+            throw APIError.requestFailed("Status \(http.statusCode): \(message)")
+        }
+    }
+
+    func deleteAccount(userId: String) async throws {
+        guard let base = baseURL else { throw APIError.invalidURL }
+        let url = base.appendingPathComponent("/api/auth/delete")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["userId": userId], options: [])
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             let message = String(data: data, encoding: .utf8) ?? "Request failed"
@@ -203,8 +213,6 @@ struct APIClient {
         struct CardRow: Decodable {
             let id: String
             let nickname: String?
-            let last4: String
-            let full_number: String?
             let card_limit: Double?
             let balance: Double?
             let tags: [String]?
@@ -217,8 +225,6 @@ struct APIClient {
             CardInfo(
                 id: UUID(uuidString: $0.id) ?? UUID(),
                 nickname: $0.nickname ?? "",
-                fullNumber: $0.full_number,
-                last4: $0.last4,
                 limit: $0.card_limit,
                 balance: $0.balance,
                 tags: $0.tags

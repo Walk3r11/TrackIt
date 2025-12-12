@@ -9,6 +9,9 @@ struct UserProfile: Codable, Equatable {
     let firstName: String
     let lastName: String
     let email: String
+    let balance: Double?
+    let monthlySpend: Double?
+    let lastActive: String?
 }
 
 enum SequenceGenerator {
@@ -45,10 +48,9 @@ final class SessionManager: ObservableObject {
         verifying = true
         defer { verifying = false }
         do {
-            let latest = try await APIClient.shared.fetchUser(byEmail: current.email)
-            // If lookup fails or returns nil, keep the local session instead of forcing logout
-            if latest == nil {
-                return
+            if let latest = try await APIClient.shared.fetchUser(byEmail: current.email) {
+                user = latest
+                SecureStore.save(latest, key: "userProfile")
             }
         } catch {
             // keep existing session if lookup failed for network reasons

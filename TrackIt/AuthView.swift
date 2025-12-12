@@ -132,7 +132,10 @@ struct AuthView: View {
                     sequenceId: resolvedSequence,
                     firstName: auth.user.firstName,
                     lastName: auth.user.lastName,
-                    email: auth.user.email
+                    email: auth.user.email,
+                    balance: auth.user.balance,
+                    monthlySpend: auth.user.monthlySpend,
+                    lastActive: auth.user.lastActive
                 )
                 await MainActor.run {
                     session.setSession(user: profile, token: auth.token)
@@ -257,7 +260,7 @@ private struct HeaderBadge: View {
     let mode: AuthMode
     var body: some View {
         HStack(spacing: 10) {
-            Label(mode == .login ? "Login" : "New admin", systemImage: mode == .login ? "lock.fill" : "sparkles")
+            Label(mode == .login ? "Login" : "New user", systemImage: mode == .login ? "lock.fill" : "sparkles")
                 .font(.footnote.bold())
                 .padding(.vertical, 10)
                 .padding(.horizontal, 14)
