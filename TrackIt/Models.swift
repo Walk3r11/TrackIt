@@ -5,6 +5,7 @@ struct Transaction: Identifiable, Codable, Equatable {
     enum Kind: String, CaseIterable, Codable { case income, expense }
 
     var id: UUID = UUID()
+    var cardId: UUID?
     var amount: Double
     var category: String
     var date: Date

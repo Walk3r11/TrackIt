@@ -188,6 +188,7 @@ struct APIClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let body: [String: Any] = [
             "userId": userId,
+            "cardId": transaction.cardId?.uuidString ?? NSNull(),
             "amount": transaction.amount,
             "category": transaction.category,
             "createdAt": ISO8601DateFormatter().string(from: transaction.date)
@@ -213,8 +214,8 @@ struct APIClient {
         struct CardRow: Decodable {
             let id: String
             let nickname: String?
-            let card_limit: Double?
-            let balance: Double?
+            let card_limit: String?
+            let balance: String?
             let tags: [String]?
         }
         struct Resp: Decodable { let cards: [CardRow] }
@@ -225,8 +226,8 @@ struct APIClient {
             CardInfo(
                 id: UUID(uuidString: $0.id) ?? UUID(),
                 nickname: $0.nickname ?? "",
-                limit: $0.card_limit,
-                balance: $0.balance,
+                limit: Double($0.card_limit ?? "0") ?? 0,
+                balance: Double($0.balance ?? "0") ?? 0,
                 tags: $0.tags
             )
         }
@@ -244,7 +245,8 @@ struct APIClient {
         }
         struct TxRow: Decodable {
             let id: String
-            let amount: Double
+            let card_id: String?
+            let amount: String
             let category: String
             let created_at: String
         }
@@ -253,13 +255,22 @@ struct APIClient {
         decoder.dateDecodingStrategy = .iso8601
         guard let decoded = try? decoder.decode(Resp.self, from: data) else { throw APIError.decodingFailed }
         let df = ISO8601DateFormatter()
-        return decoded.transactions.map {
-            Transaction(
-                id: UUID(uuidString: $0.id) ?? UUID(),
-                amount: $0.amount,
-                category: $0.category,
-                date: df.date(from: $0.created_at) ?? .now,
-                kind: $0.amount >= 0 ? .income : .expense
+        return decoded.transactions.map { row in
+            let amountDouble: Double
+            if let number = Double(row.amount) {
+                amountDouble = number
+            } else if let num = NumberFormatter().number(from: row.amount) {
+                amountDouble = num.doubleValue
+            } else {
+                amountDouble = 0
+            }
+            return Transaction(
+                id: UUID(uuidString: row.id) ?? UUID(),
+                cardId: row.card_id.flatMap { UUID(uuidString: $0) },
+                amount: amountDouble,
+                category: row.category,
+                date: df.date(from: row.created_at) ?? .now,
+                kind: amountDouble >= 0 ? .income : .expense
             )
         }
     }

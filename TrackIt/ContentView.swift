@@ -71,6 +71,12 @@ var body: some View {
                 loadPersistedData()
                 refreshFromServer()
             }
+        .task(id: session.user?.id) {
+            refreshFromServer()
+        }
+        .task(id: session.token) {
+            refreshFromServer()
+        }
         .onChange(of: session.user?.id ?? "") { _, _ in
             refreshFromServer()
         }
@@ -161,6 +167,8 @@ var body: some View {
             netBalance: net,
             totalIncome: income,
             totalExpenses: totalExpensesMagnitude,
+            lifetimeIncome: lifetimeIncome,
+            lifetimeExpenses: lifetimeExpensesMagnitude,
             categoryBreakdown: breakdown, filteredTransactions: filtered,
             onAddCard: { showAddCardSheet = true },
             onAddTransaction: {
@@ -222,8 +230,30 @@ var body: some View {
         }
     }
 
+    private var selectedCardId: UUID? {
+        cards.indices.contains(selectedCardIndex) ? cards[selectedCardIndex].id : nil
+    }
+
     private var filteredTransactions: [Transaction] {
-        transactions.filter { $0.date >= periodStart }
+        transactions.filter { tx in
+            guard tx.date >= periodStart else { return false }
+            if let cardId = selectedCardId {
+                return tx.cardId == cardId
+            }
+            return true
+        }
+    }
+
+    private var lifetimeIncome: Double {
+        transactions
+            .filter { $0.kind == .income }
+            .reduce(0) { $0 + $1.amount }
+    }
+
+    private var lifetimeExpensesMagnitude: Double {
+        transactions
+            .filter { $0.kind == .expense }
+            .reduce(0) { $0 + abs($1.amount) }
     }
 
     private var totalIncome: Double {
@@ -357,7 +387,8 @@ var body: some View {
 
     private func adjustBalance(for transaction: Transaction) {
         guard !cards.isEmpty else { return }
-        let idx = min(max(selectedCardIndex, 0), cards.count - 1)
+        let targetId = transaction.cardId ?? (cards.indices.contains(selectedCardIndex) ? cards[selectedCardIndex].id : nil)
+        guard let cardId = targetId, let idx = cards.firstIndex(where: { $0.id == cardId }) else { return }
         var card = cards[idx]
         card.balance = (card.balance ?? 0) + transaction.amount
         cards[idx] = card
@@ -380,6 +411,8 @@ struct HomeDashboard: View {
     var netBalance: Double
     var totalIncome: Double
     var totalExpenses: Double
+    var lifetimeIncome: Double
+    var lifetimeExpenses: Double
     var categoryBreakdown: [String: Double]
     var filteredTransactions: [Transaction]
     var onAddCard: () -> Void
@@ -405,8 +438,8 @@ struct HomeDashboard: View {
                 PeriodPicker(selectedPeriod: $selectedPeriod)
 
                 HStack(spacing: 14) {
-                    MetricCard(title: "Income", amount: totalIncome, icon: "arrow.down.right.circle.fill", tint: Palette.accentAlt)
-                    MetricCard(title: "Expenses", amount: -totalExpenses, icon: "arrow.up.right.circle.fill", tint: Palette.accent)
+                    MetricCard(title: "Income (all time)", amount: lifetimeIncome, icon: "arrow.down.right.circle.fill", tint: Palette.accentAlt)
+                    MetricCard(title: "Expenses (all time)", amount: -lifetimeExpenses, icon: "arrow.up.right.circle.fill", tint: Palette.accent)
                 }
 
                 SnapshotCard(
@@ -449,14 +482,19 @@ struct HomeDashboard: View {
             AddTransactionSheet(
                 categories: categories,
                 onSave: { newTransaction in
-                    withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
-                        transactions.insert(newTransaction, at: 0)
+                    var tx = newTransaction
+                    if tx.cardId == nil, cards.indices.contains(selectedCardIndex) {
+                        tx.cardId = cards[selectedCardIndex].id
                     }
-                    onNewCategory(newTransaction.category)
-                    onSyncTransaction(newTransaction)
-                    onAdjustBalance(newTransaction)
+                    withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
+                        transactions.insert(tx, at: 0)
+                    }
+                    onNewCategory(tx.category)
+                    onSyncTransaction(tx)
+                    onAdjustBalance(tx)
                 },
-                onNewCategory: { onNewCategory($0) }
+                onNewCategory: { onNewCategory($0) },
+                selectedCardId: cards.indices.contains(selectedCardIndex) ? cards[selectedCardIndex].id : nil
             )
         }
     }

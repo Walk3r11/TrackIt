@@ -5,6 +5,7 @@ struct AddTransactionSheet: View {
     var categories: [String]
     var onSave: (Transaction) -> Void
     var onNewCategory: (String) -> Void
+    var selectedCardId: UUID?
     @State private var amountText: String = ""
     @State private var category: String = ""
     @State private var kind: Transaction.Kind = .expense
@@ -58,14 +59,23 @@ struct AddTransactionSheet: View {
     }
 
     private var canSave: Bool {
-        Double(amountText) != nil && !category.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        parsedAmount != nil && !category.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var parsedAmount: Double? {
+        let normalized = amountText.replacingOccurrences(of: ",", with: ".")
+        if let direct = Double(normalized) { return direct }
+        let formatter = NumberFormatter()
+        formatter.locale = Locale.current
+        formatter.numberStyle = .decimal
+        return formatter.number(from: amountText)?.doubleValue
     }
 
     private func save() {
-        guard let rawAmount = Double(amountText) else { return }
+        guard let rawAmount = parsedAmount else { return }
         let amount = kind == .income ? abs(rawAmount) : -abs(rawAmount)
         let trimmedCategory = category.trimmingCharacters(in: .whitespacesAndNewlines)
-        let transaction = Transaction(amount: amount, category: trimmedCategory, date: date, kind: kind)
+        let transaction = Transaction(cardId: selectedCardId, amount: amount, category: trimmedCategory, date: date, kind: kind)
         withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
             if !categories.contains(where: { $0.caseInsensitiveCompare(trimmedCategory) == .orderedSame }) {
                 onNewCategory(trimmedCategory)
@@ -119,14 +129,25 @@ struct AddCardSheet: View {
     }
 
     private func save() {
+        let parsedLimit = Self.parseDecimal(limitText)
+        let parsedBalance = Self.parseDecimal(balanceText)
         let card = CardInfo(
             nickname: nickname.trimmingCharacters(in: .whitespacesAndNewlines),
-            limit: Double(limitText),
-            balance: Double(balanceText),
+            limit: parsedLimit,
+            balance: parsedBalance,
             tags: tagsText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         )
         onSave(card)
         dismiss()
+    }
+
+    fileprivate static func parseDecimal(_ text: String) -> Double? {
+        let normalized = text.replacingOccurrences(of: ",", with: ".")
+        if let direct = Double(normalized) { return direct }
+        let formatter = NumberFormatter()
+        formatter.locale = Locale.current
+        formatter.numberStyle = .decimal
+        return formatter.number(from: text)?.doubleValue
     }
 }
 
@@ -195,14 +216,17 @@ struct CardDetailSheet: View {
     }
 
     private func save() {
+        let parsedLimit = AddCardSheet.parseDecimal(limitText)
+        let parsedBalance = AddCardSheet.parseDecimal(balanceText)
         let updated = CardInfo(
             id: card.id,
             nickname: nickname.trimmingCharacters(in: .whitespacesAndNewlines),
-            limit: Double(limitText),
-            balance: Double(balanceText),
+            limit: parsedLimit,
+            balance: parsedBalance,
             tags: tagsText.split(separator: ",").map { $0.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) }.filter { !$0.isEmpty }
         )
         onUpdate(updated)
         dismiss()
     }
 }
+
