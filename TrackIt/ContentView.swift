@@ -129,19 +129,36 @@ var body: some View {
             do {
                 let remoteCards = try await APIClient.shared.fetchCards(userId: userId)
                 await MainActor.run {
-                    cards = remoteCards
-                    saveCards()
+                    if !remoteCards.isEmpty {
+                        cards = remoteCards
+                        if requireCardUnlock { cardsLocked = true }
+                        saveCards()
+                    } else if cards.isEmpty {
+                        restoreCardsFromDisk()
+                    }
                 }
             } catch {
+                await MainActor.run {
+                    restoreCardsFromDisk()
+                }
                 print("Fetch cards failed:", error)
             }
             do {
                 let remoteTx = try await APIClient.shared.fetchTransactions(userId: userId)
                 await MainActor.run {
-                    transactions = remoteTx
-                    saveTransactions()
+                    if !remoteTx.isEmpty {
+                        transactions = remoteTx
+                        saveTransactions()
+                    } else if transactions.isEmpty {
+                        restoreTransactionsFromDisk()
+                    }
                 }
             } catch {
+                await MainActor.run {
+                    if transactions.isEmpty {
+                        restoreTransactionsFromDisk()
+                    }
+                }
                 print("Fetch transactions failed:", error)
             }
         }
@@ -235,13 +252,11 @@ var body: some View {
     }
 
     private var filteredTransactions: [Transaction] {
-        transactions.filter { tx in
-            guard tx.date >= periodStart else { return false }
-            if let cardId = selectedCardId {
-                return tx.cardId == cardId
-            }
-            return true
-        }
+        let byPeriod = transactions.filter { $0.date >= periodStart }
+        let periodScoped = byPeriod.isEmpty ? transactions : byPeriod
+        guard let cardId = selectedCardId else { return periodScoped }
+        let byCard = periodScoped.filter { $0.cardId == cardId }
+        return byCard.isEmpty ? periodScoped : byCard
     }
 
     private var lifetimeIncome: Double {
@@ -281,38 +296,53 @@ var body: some View {
     }
 
     private func loadPersistedData() {
-        if let storedCards: [CardInfo] = SecureStore.load([CardInfo].self, key: "cards") {
-            cards = storedCards
-            if !storedCards.isEmpty { cardsLocked = true }
-        }
-        if let storedTransactions: [Transaction] = SecureStore.load([Transaction].self, key: "transactions") {
-            transactions = storedTransactions
-        }
-        if let storedCategories: [String] = SecureStore.load([String].self, key: "categories") {
-            categories = storedCategories
-        } else {
-            categories = ["Dining", "Groceries", "Travel", "Bills", "Shopping", "Transfers"]
-        }
+        restoreCardsFromDisk()
+        restoreTransactionsFromDisk()
+        restoreCategoriesFromDisk()
 
         Task {
             guard let userId = session.user?.id else { return }
             if cards.isEmpty {
-                if let remoteCards = try? await APIClient.shared.fetchCards(userId: userId) {
+                if let remoteCards = try? await APIClient.shared.fetchCards(userId: userId), !remoteCards.isEmpty {
                     await MainActor.run {
                         cards = remoteCards
-                        if !remoteCards.isEmpty { cardsLocked = true }
+                        if requireCardUnlock { cardsLocked = true }
                         saveCards()
                     }
                 }
             }
             if transactions.isEmpty {
-                if let remoteTx = try? await APIClient.shared.fetchTransactions(userId: userId) {
+                if let remoteTx = try? await APIClient.shared.fetchTransactions(userId: userId), !remoteTx.isEmpty {
                     await MainActor.run {
                         transactions = remoteTx
                         saveTransactions()
                     }
                 }
             }
+        }
+    }
+
+    @MainActor
+    private func restoreCardsFromDisk() {
+        if let storedCards: [CardInfo] = SecureStore.load([CardInfo].self, key: "cards"), !storedCards.isEmpty {
+            cards = storedCards
+            if requireCardUnlock { cardsLocked = true }
+        }
+    }
+
+    @MainActor
+    private func restoreTransactionsFromDisk() {
+        if let storedTransactions: [Transaction] = SecureStore.load([Transaction].self, key: "transactions") {
+            transactions = storedTransactions
+        }
+    }
+
+    @MainActor
+    private func restoreCategoriesFromDisk() {
+        if let storedCategories: [String] = SecureStore.load([String].self, key: "categories") {
+            categories = storedCategories
+        } else {
+            categories = ["Dining", "Groceries", "Travel", "Bills", "Shopping", "Transfers"]
         }
     }
 
