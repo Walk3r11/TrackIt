@@ -61,6 +61,11 @@
             value = "https://trackit-dashboard-git-tests-walk3r11s-projects.vercel.app"
             isEnabled = "NO">
          </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "API_BASE_URL"
+            value = "https://172.20.10.2:3000"
+            isEnabled = "NO">
+         </EnvironmentVariable>
       </EnvironmentVariables>
    </LaunchAction>
    <ProfileAction

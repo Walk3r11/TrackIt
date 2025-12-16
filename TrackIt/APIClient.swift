@@ -113,6 +113,7 @@ struct APIClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let body: [String: Any] = [
+            "id": card.id.uuidString,
             "userId": userId,
             "nickname": card.nickname,
             "limit": card.limit ?? 0,
@@ -189,6 +190,7 @@ struct APIClient {
         let body: [String: Any] = [
             "userId": userId,
             "cardId": transaction.cardId?.uuidString ?? NSNull(),
+            "card_id": transaction.cardId?.uuidString ?? NSNull(),
             "amount": transaction.amount,
             "category": transaction.category,
             "createdAt": ISO8601DateFormatter().string(from: transaction.date)
@@ -245,14 +247,43 @@ struct APIClient {
         }
         struct TxRow: Decodable {
             let id: String
-            let card_id: String?
+            let cardId: String?
             let amount: String
             let category: String
-            let created_at: String
+            let createdAt: String
+
+            enum CodingKeys: String, CodingKey {
+                case id
+                case cardId
+                case card_id
+                case amount
+                case category
+                case createdAt
+                case created_at
+            }
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                id = try container.decode(String.self, forKey: .id)
+                cardId = try container.decodeIfPresent(String.self, forKey: .cardId)
+                    ?? container.decodeIfPresent(String.self, forKey: .card_id)
+                if let amountString = try container.decodeIfPresent(String.self, forKey: .amount) {
+                    amount = amountString
+                } else if let amountNumber = try container.decodeIfPresent(Double.self, forKey: .amount) {
+                    amount = String(amountNumber)
+                } else {
+                    amount = "0"
+                }
+                category = try container.decodeIfPresent(String.self, forKey: .category) ?? ""
+                createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
+                    ?? container.decodeIfPresent(String.self, forKey: .created_at)
+                    ?? ""
+            }
         }
         struct Resp: Decodable { let transactions: [TxRow] }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
         guard let decoded = try? decoder.decode(Resp.self, from: data) else { throw APIError.decodingFailed }
         let df = ISO8601DateFormatter()
         return decoded.transactions.map { row in
@@ -266,10 +297,10 @@ struct APIClient {
             }
             return Transaction(
                 id: UUID(uuidString: row.id) ?? UUID(),
-                cardId: row.card_id.flatMap { UUID(uuidString: $0) },
+                cardId: row.cardId.flatMap { UUID(uuidString: $0) },
                 amount: amountDouble,
                 category: row.category,
-                date: df.date(from: row.created_at) ?? .now,
+                date: df.date(from: row.createdAt) ?? .now,
                 kind: amountDouble >= 0 ? .income : .expense
             )
         }

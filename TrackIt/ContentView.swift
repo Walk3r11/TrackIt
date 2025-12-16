@@ -83,7 +83,12 @@ var body: some View {
         .onChange(of: session.token ?? "") { _, _ in
             refreshFromServer()
         }
-        .onChange(of: cards) { _, _ in
+        .onChange(of: cards) { _, newCards in
+            if newCards.isEmpty {
+                selectedCardIndex = 0
+            } else if selectedCardIndex >= newCards.count {
+                selectedCardIndex = max(0, newCards.count - 1)
+            }
             saveCards()
         }
         .onChange(of: transactions) { _, _ in
@@ -131,7 +136,6 @@ var body: some View {
                 await MainActor.run {
                     if !remoteCards.isEmpty {
                         cards = remoteCards
-                        if requireCardUnlock { cardsLocked = true }
                         saveCards()
                     } else if cards.isEmpty {
                         restoreCardsFromDisk()
@@ -147,7 +151,9 @@ var body: some View {
                 let remoteTx = try await APIClient.shared.fetchTransactions(userId: userId)
                 await MainActor.run {
                     if !remoteTx.isEmpty {
-                        transactions = remoteTx
+                        let normalized = attachSingleCardId(remoteTx)
+                        let merged = mergeTransactionsWithLocal(normalized)
+                        transactions = merged
                         saveTransactions()
                     } else if transactions.isEmpty {
                         restoreTransactionsFromDisk()
@@ -255,8 +261,15 @@ var body: some View {
         let byPeriod = transactions.filter { $0.date >= periodStart }
         let periodScoped = byPeriod.isEmpty ? transactions : byPeriod
         guard let cardId = selectedCardId else { return periodScoped }
-        let byCard = periodScoped.filter { $0.cardId == cardId }
-        return byCard.isEmpty ? periodScoped : byCard
+        let assigned = periodScoped.filter { $0.cardId == cardId }
+        if !assigned.isEmpty { return assigned }
+
+        let unassigned = periodScoped.filter { $0.cardId == nil }
+        let allUnassigned = periodScoped.allSatisfy { $0.cardId == nil }
+        if cards.count == 1 || allUnassigned {
+            return unassigned
+        }
+        return []
     }
 
     private var lifetimeIncome: Double {
@@ -306,7 +319,6 @@ var body: some View {
                 if let remoteCards = try? await APIClient.shared.fetchCards(userId: userId), !remoteCards.isEmpty {
                     await MainActor.run {
                         cards = remoteCards
-                        if requireCardUnlock { cardsLocked = true }
                         saveCards()
                     }
                 }
@@ -314,7 +326,9 @@ var body: some View {
             if transactions.isEmpty {
                 if let remoteTx = try? await APIClient.shared.fetchTransactions(userId: userId), !remoteTx.isEmpty {
                     await MainActor.run {
-                        transactions = remoteTx
+                        let normalized = attachSingleCardId(remoteTx)
+                        let merged = mergeTransactionsWithLocal(normalized)
+                        transactions = merged
                         saveTransactions()
                     }
                 }
@@ -334,6 +348,28 @@ var body: some View {
     private func restoreTransactionsFromDisk() {
         if let storedTransactions: [Transaction] = SecureStore.load([Transaction].self, key: "transactions") {
             transactions = storedTransactions
+        }
+    }
+
+    @MainActor
+    private func attachSingleCardId(_ remote: [Transaction]) -> [Transaction] {
+        guard cards.count == 1, let cardId = cards.first?.id else { return remote }
+        return remote.map { tx in
+            guard tx.cardId == nil else { return tx }
+            var updated = tx
+            updated.cardId = cardId
+            return updated
+        }
+    }
+
+    @MainActor
+    private func mergeTransactionsWithLocal(_ remote: [Transaction]) -> [Transaction] {
+        let localMap = Dictionary(uniqueKeysWithValues: transactions.map { ($0.id, $0) })
+        return remote.map { tx in
+            guard tx.cardId == nil, let local = localMap[tx.id], let cardId = local.cardId else { return tx }
+            var updated = tx
+            updated.cardId = cardId
+            return updated
         }
     }
 
@@ -846,8 +882,8 @@ struct CardsTab: View {
                         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Palette.stroke, lineWidth: 1))
                     } else {
                         VStack(spacing: 12) {
-                            ForEach(cards) { card in
-                                CardDetailRow(card: card, currencyCode: currencyCode)
+                            ForEach(Array(cards.enumerated()), id: \.element.id) { idx, card in
+                                CardDetailRow(card: card, currencyCode: currencyCode, index: idx)
                                     .onTapGesture { onSelect(card) }
                             }
                         }
@@ -869,6 +905,8 @@ struct CardsTab: View {
 private struct CardDetailRow: View {
     var card: CardInfo
     var currencyCode: String
+    var index: Int
+    private var theme: CardTheme.Theme { CardTheme.theme(for: card, index: index) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -900,8 +938,27 @@ private struct CardDetailRow: View {
             }
         }
         .padding()
-        .background(Palette.card, in: RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Palette.stroke, lineWidth: 1))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            LinearGradient(
+                colors: theme.background,
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 16)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(
+                    LinearGradient(
+                        colors: theme.stroke,
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    ),
+                    lineWidth: 1
+                )
+        )
+        .shadow(color: theme.glow.opacity(0.16), radius: 12, y: 8)
     }
 }
 
@@ -1005,7 +1062,7 @@ struct CardCarousel: View {
             VStack(spacing: 8) {
                 TabView(selection: $selectedIndex) {
                     ForEach(Array(cards.enumerated()), id: \.element.id) { idx, card in
-                        CardHeader(card: card, shimmerOffset: shimmerOffset)
+                        CardHeader(card: card, shimmerOffset: shimmerOffset, index: idx)
                             .tag(idx)
                     }
                 }
@@ -1028,30 +1085,25 @@ struct CardCarousel: View {
 private struct CardHeader: View {
     var card: CardInfo
     var shimmerOffset: CGFloat
+    var index: Int
     private let currencyCode = Locale.current.currency?.identifier ?? "USD"
+    private var theme: CardTheme.Theme { CardTheme.theme(for: card, index: index) }
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 24)
                 .fill(
-                    AngularGradient(
-                        gradient: Gradient(colors: [
-                            Color(red: 0.10, green: 0.14, blue: 0.32),
-                            Color(red: 0.07, green: 0.26, blue: 0.52),
-                            Color(red: 0.11, green: 0.16, blue: 0.36),
-                            Color(red: 0.16, green: 0.22, blue: 0.46)
-                        ]),
-                        center: .center
+                    LinearGradient(
+                        colors: theme.background,
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
                     )
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 24)
                         .stroke(
                             LinearGradient(
-                                colors: [
-                                    Palette.accent.opacity(0.9),
-                                    Palette.accentAlt.opacity(0.8)
-                                ],
+                                colors: theme.stroke,
                                 startPoint: .leading,
                                 endPoint: .trailing
                             ),
@@ -1059,7 +1111,7 @@ private struct CardHeader: View {
                         )
                         .blur(radius: 0.2)
                 )
-                .shadow(color: Palette.accentAlt.opacity(0.28), radius: 24, x: 0, y: 16)
+                .shadow(color: theme.glow.opacity(0.28), radius: 24, x: 0, y: 16)
                 .overlay(
                     LinearGradient(
                         colors: [.white.opacity(0.0), .white.opacity(0.3), .white.opacity(0.0)],
@@ -1072,7 +1124,7 @@ private struct CardHeader: View {
                 )
                 .background(
                     RadialGradient(
-                        colors: [Palette.accentAlt.opacity(0.35), .clear],
+                        colors: [theme.glow.opacity(0.35), .clear],
                         center: .center,
                         startRadius: 60,
                         endRadius: 340
@@ -1100,9 +1152,9 @@ private struct CardHeader: View {
 
                 HStack(spacing: 10) {
                     if let limit = card.limit {
-                        StatPill(title: "Limit", value: limit, currencyCode: currencyCode)
+                        StatPill(title: "Limit", value: limit, currencyCode: currencyCode, accentColor: theme.accent)
                     } else {
-                        StatPill(title: "Status", label: "Active")
+                        StatPill(title: "Status", label: "Active", accentColor: theme.accent)
                     }
                     Spacer()
                 }
@@ -1119,13 +1171,15 @@ private struct StatPill: View {
     var currencyCode: String = "USD"
     var label: String?
     var highlight: Bool = false
+    var accentColor: Color? = nil
 
-    init(title: String, value: Double? = nil, currencyCode: String = "USD", label: String? = nil, highlight: Bool = false) {
+    init(title: String, value: Double? = nil, currencyCode: String = "USD", label: String? = nil, highlight: Bool = false, accentColor: Color? = nil) {
         self.title = title
         self.value = value
         self.currencyCode = currencyCode
         self.label = label
         self.highlight = highlight
+        self.accentColor = accentColor
     }
 
     var body: some View {
@@ -1145,9 +1199,7 @@ private struct StatPill: View {
         .padding(.vertical, 6)
         .background(
             LinearGradient(
-                colors: highlight
-                    ? [Palette.accentAlt.opacity(0.45), Palette.accent.opacity(0.3)]
-                    : [.white.opacity(0.12), .white.opacity(0.05)],
+                colors: accentColors,
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             ),
@@ -1155,8 +1207,28 @@ private struct StatPill: View {
         )
         .overlay(
             Capsule()
-                .stroke(.white.opacity(highlight ? 0.38 : 0.22), lineWidth: 1)
+                .stroke(borderColor, lineWidth: 1)
         )
+    }
+
+    private var accentColors: [Color] {
+        if let accentColor = accentColor {
+            return [
+                accentColor.opacity(0.55),
+                accentColor.opacity(0.32)
+            ]
+        }
+        if highlight {
+            return [Palette.accentAlt.opacity(0.45), Palette.accent.opacity(0.3)]
+        }
+        return [.white.opacity(0.12), .white.opacity(0.05)]
+    }
+
+    private var borderColor: Color {
+        if let accentColor = accentColor {
+            return accentColor.opacity(0.35)
+        }
+        return .white.opacity(highlight ? 0.38 : 0.22)
     }
 }
 
