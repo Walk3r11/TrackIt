@@ -1,5 +1,13 @@
 import SwiftUI
 import LocalAuthentication
+#if canImport(UIKit)
+import UIKit
+#endif
+
+enum LayoutMetrics {
+    static let maxContentWidth: CGFloat = 420
+    static let horizontalPadding: CGFloat = 16
+}
 
 // MARK: - Content View
 struct ContentView: View {
@@ -11,52 +19,195 @@ struct ContentView: View {
     @State private var showAddSheet = false
     @State private var showAddCardSheet = false
     @State private var selectedCardDetail: CardInfo?
-    @State private var requireCardUnlock = true
+    @AppStorage("requireCardUnlock") private var requireCardUnlock = true
     @State private var cardsLocked = true
     @State private var selectedCardIndex = 0
     @State private var transactions: [Transaction] = []
     @State private var categories: [String] = []
     @State private var cards: [CardInfo] = []
+    @State private var showCardDailyLimitAlert = false
+    @State private var cardDailyLimitAlertCard: CardInfo?
+    @State private var cardDailyLimitAlertSpent: Double = 0
+    @State private var cardLimitAlertPeriod: SpendingLimitPeriod = .daily
+    @State private var lastLocallyAddedTransactionId: UUID?
     @State private var supportTickets: [SupportTicket] = [
         SupportTicket(subject: "Card not showing", detail: "Card carousel empty after refresh."),
         SupportTicket(subject: "Balance mismatch", detail: "Net balance seems off vs bank.")
     ]
     @State private var showSupportSheet = false
     @State private var showTransactionsSheet = false
+    @State private var cardUnlockInProgress = false
+    @State private var showCardsManagerSheet = false
 
 var body: some View {
-    TabView(selection: $selectedTab) {
-        dashboard
-            .tag(0)
-            .tabItem { Label("Home", systemImage: "house.fill") }
+    applyRootModifiers(to: mainTabs)
+}
 
-            CardsTab(
-                cards: $cards,
-                requireCardUnlock: requireCardUnlock,
-                locked: $cardsLocked,
-                showAddCardSheet: $showAddCardSheet,
-                unlock: authenticateCards,
-                onSelect: { card in selectedCardDetail = card },
-                onSyncCard: { card in syncCard(card) },
-                onDeleteCard: { card in deleteCard(card) }
-            )
-            .tag(1)
-            .tabItem { Label("Cards", systemImage: "creditcard.fill") }
+private func applyRootModifiers<Content: View>(to content: Content) -> some View {
+    let view0 = content
+        .preferredColorScheme(.dark)
+        .appBackground()
+        .animation(.easeInOut(duration: 0.25), value: selectedTab)
 
-            PlaceholderTab(title: "AI")
-                .tag(2)
-                .tabItem { Label("AI", systemImage: "brain.head.profile") }
+	        let view1 = view0.onAppear {
+	            loadPersistedData()
+	            cardsLocked = requireCardUnlock
+	            refreshFromServer()
+	            checkSelectedCardDailyLimit()
+	            DispatchQueue.main.async { [self] in
+	                updateFilteredTransactionsCacheSync()
+	            }
+	        }
 
-            SettingsTab(
-                categories: $categories,
-                requireCardUnlock: $requireCardUnlock,
-                supportTickets: $supportTickets,
-                showSupportSheet: $showSupportSheet,
-                onToggleCardLock: { enabled in
-                    requireCardUnlock = enabled
-                    cardsLocked = enabled
+        let view2 = view1.task(id: session.user?.id) {
+            refreshFromServer()
+        }
+
+        let view3 = view2.task(id: session.token) {
+            refreshFromServer()
+        }
+
+        let view4 = view3
+            .onChange(of: session.user?.id ?? "") { _, _ in
+                refreshFromServer()
+            }
+            .onChange(of: session.token ?? "") { _, _ in
+                refreshFromServer()
+            }
+
+	        let view5 = view4
+	        .onChange(of: cards) { _, newCards in
+	            if newCards.isEmpty {
+	                selectedCardIndex = 0
+	            } else if selectedCardIndex >= newCards.count {
+	                selectedCardIndex = max(0, newCards.count - 1)
+	            }
+	            saveCards()
+	            checkSelectedCardDailyLimit()
+	        }
+	            .onChange(of: transactions.count) { _, _ in
+	                saveTransactions()
+	                checkSelectedCardDailyLimit()
+	            }
+	            .onChange(of: selectedCardIndex) { _, _ in
+	                checkSelectedCardDailyLimit()
+	                DispatchQueue.main.async { [self] in
+	                    updateFilteredTransactionsCacheSync()
+	                }
+	            }
+	            .onChange(of: selectedPeriod) { _, _ in
+	                DispatchQueue.main.async { [self] in
+	                    updateFilteredTransactionsCacheSync()
+	                }
+	            }
+	            .onChange(of: transactions.count) { _, _ in
+	                DispatchQueue.main.async { [self] in
+	                    updateFilteredTransactionsCacheSync()
+	                }
+	            }
+	            .onChange(of: showAddSheet) { _, isPresented in
+	                if !isPresented {
+	                    checkLimitAfterLocalTransactionAdd()
+	                }
+	            }
+            .onChange(of: categories) { _, _ in
+                saveCategories()
+            }
+
+	    let view6 = view5
+	        .onChange(of: requireCardUnlock) { _, enabled in
+	            cardsLocked = enabled
+	        }
+
+    let view7 = view6.onChange(of: scenePhase) { _, newPhase in
+        if newPhase == .background && requireCardUnlock {
+            cardsLocked = true
+        } else if newPhase == .active {
+            refreshFromServer()
+        }
+    }
+
+    let view8 = view7.sheet(item: $selectedCardDetail) { card in
+        CardDetailSheet(
+            card: card,
+            onUpdate: { updated in
+                if let idx = cards.firstIndex(where: { $0.id == updated.id }) {
+                    cards[idx] = updated
+                    updateCardRemote(updated)
                 }
-            )
+                selectedCardDetail = nil
+            },
+            onDelete: {
+                deleteCard(card)
+                selectedCardDetail = nil
+            }
+        )
+    }
+
+    let view9 = view8.sheet(isPresented: $showSupportSheet) {
+        SupportTicketSheet { subject, detail in
+            let ticket = SupportTicket(subject: subject, detail: detail)
+            supportTickets.insert(ticket, at: 0)
+        }
+    }
+
+	    let view10 = view9.alert("Spending limit exceeded", isPresented: $showCardDailyLimitAlert) {
+	        Button("Edit limit") {
+	            if let cardDailyLimitAlertCard {
+	                selectedCardDetail = cardDailyLimitAlertCard
+	            }
+	        }
+	        Button("OK", role: .cancel) {}
+	    } message: {
+	        Text(cardDailyLimitAlertMessage)
+	    }
+
+	    let view11 = view10.sheet(isPresented: $showCardsManagerSheet) {
+	        CardsTab(
+	            cards: $cards,
+	            requireCardUnlock: requireCardUnlock,
+	            locked: $cardsLocked,
+	            showAddCardSheet: $showAddCardSheet,
+	            overLimitCardIds: overLimitCardIds,
+	            unlock: { userInitiated in
+	                authenticateCards(userInitiated: userInitiated)
+	            },
+	            onSelect: { card in
+	                selectedCardDetail = card
+	            },
+	            onSyncCard: { card in syncCard(card) },
+	            onDeleteCard: { card in deleteCard(card) }
+	        )
+	    }
+	
+	    return view11
+	}
+
+	    private var mainTabs: some View {
+	        TabView(selection: $selectedTab) {
+	            dashboard
+	                .tag(0)
+	                .tabItem { Label("Home", systemImage: "house.fill") }
+
+		            TicketsTab(
+		                tickets: $supportTickets,
+		                showNewTicket: $showSupportSheet
+		            )
+		            .tag(1)
+		            .tabItem { Label("Tickets", systemImage: "lifepreserver.fill") }
+
+	            PlaceholderTab(title: "AI")
+	                .tag(2)
+	                .tabItem { Label("AI", systemImage: "brain.head.profile") }
+
+	            SettingsTab(
+	                categories: $categories,
+	                requireCardUnlock: $requireCardUnlock,
+	                onToggleCardLock: { enabled in
+	                    requireCardUnlock = enabled
+	                    cardsLocked = enabled
+	                }
+	            )
             .environmentObject(session)
             .onAppear {
                 refreshFromServer()
@@ -64,151 +215,251 @@ var body: some View {
             .tag(3)
             .tabItem { Label("Settings", systemImage: "gearshape.fill") }
         }
-        .preferredColorScheme(.dark)
-        .appBackground()
-        .animation(.easeInOut(duration: 0.25), value: selectedTab)
-            .onAppear {
-                loadPersistedData()
-                refreshFromServer()
-            }
-        .task(id: session.user?.id) {
-            refreshFromServer()
-        }
-        .task(id: session.token) {
-            refreshFromServer()
-        }
-        .onChange(of: session.user?.id ?? "") { _, _ in
-            refreshFromServer()
-        }
-        .onChange(of: session.token ?? "") { _, _ in
-            refreshFromServer()
-        }
-        .onChange(of: cards) { _, newCards in
-            if newCards.isEmpty {
-                selectedCardIndex = 0
-            } else if selectedCardIndex >= newCards.count {
-                selectedCardIndex = max(0, newCards.count - 1)
-            }
-            saveCards()
-        }
-        .onChange(of: transactions) { _, _ in
-            saveTransactions()
-        }
-        .onChange(of: categories) { _, _ in
-            saveCategories()
-        }
-        .onChange(of: scenePhase) { _, newPhase in
-            if (newPhase == .background || newPhase == .inactive) && requireCardUnlock {
-                cardsLocked = true
-            } else if newPhase == .active {
-                refreshFromServer()
-            }
-        }
-        .sheet(item: $selectedCardDetail) { card in
-            CardDetailSheet(
-                card: card,
-                onUpdate: { updated in
-                    if let idx = cards.firstIndex(where: { $0.id == updated.id }) {
-                        cards[idx] = updated
-                        updateCardRemote(updated)
-                    }
-                    selectedCardDetail = nil
-                },
-                onDelete: {
-                    deleteCard(card)
-                    selectedCardDetail = nil
+    }
+
+    private var cardDailyLimitAlertMessage: String {
+        let currencyCode = Locale.current.currency?.identifier ?? "USD"
+        let spentText = cardDailyLimitAlertSpent.formatted(.currency(code: currencyCode))
+        let limitValue = cardDailyLimitAlertCard?.effectiveLimit(for: cardLimitAlertPeriod) ?? 0
+        let limitText = limitValue.formatted(.currency(code: currencyCode))
+        let nickname = cardDailyLimitAlertCard?.nickname.isEmpty == false ? cardDailyLimitAlertCard?.nickname ?? "Card" : "Card"
+        let period = cardLimitAlertPeriod
+        return "You spent \(spentText) this \(period.title.lowercased()) on \(nickname), over your limit of \(limitText)."
+    }
+
+    private var overLimitCardIds: Set<UUID> {
+        let now = Date()
+        var overLimit: Set<UUID> = []
+        for card in cards {
+            for (period, limit) in card.effectiveLimitsInDisplayOrder() {
+                let start = periodStart(for: period, now: now)
+                if spend(for: card.id, since: start) >= limit {
+                    overLimit.insert(card.id)
+                    break
                 }
-            )
+            }
         }
-        .sheet(isPresented: $showSupportSheet) {
-            SupportTicketSheet { subject, detail in
-                let ticket = SupportTicket(subject: subject, detail: detail)
-                supportTickets.insert(ticket, at: 0)
+        return overLimit
+    }
+
+    private func checkSelectedCardDailyLimit() {
+        let now = Date()
+        for card in cards {
+            for period in [SpendingLimitPeriod.daily, .weekly, .monthly] {
+                guard let limit = card.effectiveLimit(for: period), limit > 0 else { continue }
+                let start = periodStart(for: period, now: now)
+                let spent = spend(for: card.id, since: start)
+                guard spent >= limit else { continue }
+
+                let signature = "\(periodKey(from: start))|\(period.rawValue)|\(Int((limit * 100).rounded()))"
+                if storedCardLimitSignature(for: card.id, period: period) == signature { continue }
+                storeCardLimitSignature(signature, for: card.id, period: period)
+
+                cardDailyLimitAlertCard = card
+                cardDailyLimitAlertSpent = spent
+                cardLimitAlertPeriod = period
+                triggerLimitExceededHaptics()
+                showCardDailyLimitAlert = true
+                return
             }
         }
     }
 
-    private func refreshFromServer() {
-        guard let userId = session.user?.id else { return }
-        Task {
-            do {
-                let remoteCards = try await APIClient.shared.fetchCards(userId: userId)
-                await MainActor.run {
-                    if !remoteCards.isEmpty {
-                        cards = remoteCards
-                        saveCards()
-                    } else if cards.isEmpty {
-                        restoreCardsFromDisk()
-                    }
-                }
-            } catch {
-                await MainActor.run {
-                    restoreCardsFromDisk()
-                }
-                print("Fetch cards failed:", error)
-            }
-            do {
-                let remoteTx = try await APIClient.shared.fetchTransactions(userId: userId)
-                await MainActor.run {
-                    if !remoteTx.isEmpty {
-                        let normalized = attachSingleCardId(remoteTx)
-                        let merged = mergeTransactionsWithLocal(normalized)
-                        transactions = merged
-                        saveTransactions()
-                    } else if transactions.isEmpty {
-                        restoreTransactionsFromDisk()
-                    }
-                }
-            } catch {
-                await MainActor.run {
-                    if transactions.isEmpty {
-                        restoreTransactionsFromDisk()
-                    }
-                }
-                print("Fetch transactions failed:", error)
-            }
+    private func checkLimitAfterLocalTransactionAdd() {
+        guard let txId = lastLocallyAddedTransactionId else { return }
+        lastLocallyAddedTransactionId = nil
+
+        guard let tx = transactions.first(where: { $0.id == txId }) else { return }
+        guard tx.kind == .expense else { return }
+
+        guard let card = cardForTransaction(tx) else { return }
+
+        for period in [SpendingLimitPeriod.daily, .weekly, .monthly] {
+            guard let limit = card.effectiveLimit(for: period), limit > 0 else { continue }
+            let start = periodStart(for: period, now: tx.date)
+            let spent = spend(for: card.id, since: start)
+            guard spent >= limit else { continue }
+
+            let key = "cardLimitAlertLastTx.\(card.id.uuidString).\(period.rawValue).\(periodKey(from: start))"
+            if UserDefaults.standard.string(forKey: key) == tx.id.uuidString { continue }
+            UserDefaults.standard.set(tx.id.uuidString, forKey: key)
+
+            cardDailyLimitAlertCard = card
+            cardDailyLimitAlertSpent = spent
+            cardLimitAlertPeriod = period
+            triggerLimitExceededHaptics()
+            showCardDailyLimitAlert = true
+            return
         }
     }
+
+    private func cardForTransaction(_ tx: Transaction) -> CardInfo? {
+        if let cardId = tx.cardId {
+            return cards.first(where: { $0.id == cardId })
+        }
+        if cards.count == 1 { return cards.first }
+        return nil
+    }
+
+    private func spend(for cardId: UUID, since start: Date) -> Double {
+        let includeUnassigned = cards.count == 1 && cards.first?.id == cardId
+        return transactions
+            .filter {
+                $0.kind == .expense &&
+                    $0.date >= start &&
+                    ($0.cardId == cardId || (includeUnassigned && $0.cardId == nil))
+            }
+            .reduce(0) { $0 + abs($1.amount) }
+    }
+
+    private func periodStart(for period: SpendingLimitPeriod, now: Date) -> Date {
+        let calendar = Calendar.current
+        switch period {
+        case .daily:
+            return calendar.startOfDay(for: now)
+        case .weekly:
+            return calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? calendar.startOfDay(for: now)
+        case .monthly:
+            return calendar.dateInterval(of: .month, for: now)?.start ?? calendar.startOfDay(for: now)
+        }
+    }
+
+    private func periodKey(from start: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar.current
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: start)
+    }
+
+    private func storedCardLimitSignature(for cardId: UUID, period: SpendingLimitPeriod) -> String {
+        UserDefaults.standard.string(forKey: "cardLimitAlertSignature.\(cardId.uuidString).\(period.rawValue)") ?? ""
+    }
+
+    private func storeCardLimitSignature(_ signature: String, for cardId: UUID, period: SpendingLimitPeriod) {
+        UserDefaults.standard.set(signature, forKey: "cardLimitAlertSignature.\(cardId.uuidString).\(period.rawValue)")
+    }
+
+    private func triggerLimitExceededHaptics() {
+#if canImport(UIKit)
+        let generator = UINotificationFeedbackGenerator()
+        generator.prepare()
+        generator.notificationOccurred(.warning)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            let generator = UINotificationFeedbackGenerator()
+            generator.notificationOccurred(.warning)
+        }
+#endif
+    }
+
+	    private func refreshFromServer() {
+	        guard let userId = session.user?.id else { return }
+	        Task {
+	            async let cardsTask = APIClient.shared.fetchCards(userId: userId)
+	            async let transactionsTask = APIClient.shared.fetchTransactions(userId: userId)
+	            async let categoriesTask = APIClient.shared.fetchCategories(userId: userId)
+	            async let savingsTask = APIClient.shared.fetchSavingsGoal(userId: userId)
+	            
+	            let remoteCards = try? await cardsTask
+	            let remoteTx = try? await transactionsTask
+	            let remoteCategories = try? await categoriesTask
+	            let remoteSavings = try? await savingsTask
+	            
+	            await MainActor.run {
+	                if let cards = remoteCards, !cards.isEmpty {
+	                    self.cards = mergeCardsPreservingOrder(remote: cards, local: self.cards)
+	                    saveCards()
+	                } else if self.cards.isEmpty {
+	                    restoreCardsFromDisk()
+	                }
+	                
+	                if let transactions = remoteTx, !transactions.isEmpty {
+	                    let normalized = attachSingleCardId(transactions)
+	                    let merged = mergeTransactionsWithLocal(normalized)
+	                    self.transactions = merged
+	                    saveTransactions()
+	                } else if self.transactions.isEmpty {
+	                    restoreTransactionsFromDisk()
+	                }
+	                
+	                if let categories = remoteCategories {
+	                    self.categories = categories
+	                    saveCategories()
+	                }
+	                
+	                if let savings = remoteSavings {
+	                    NotificationCenter.default.post(
+	                        name: NSNotification.Name("SavingsGoalUpdated"),
+	                        object: nil,
+	                        userInfo: ["goalAmount": savings.goalAmount, "goalPeriod": savings.goalPeriod.rawValue]
+	                    )
+	                }
+	            }
+	        }
+	    }
 
     private var dashboard: some View {
         let income = totalIncome
         let net = netBalance
         let breakdown = categoryBreakdown
+        let incomeBreakdown = incomeCategoryBreakdown
         let filtered = filteredTransactions
+        let name = session.user?.firstName.isEmpty == false ? (session.user?.firstName ?? "there") : "there"
 
         return HomeDashboard(
-            selectedPeriod: $selectedPeriod,
-            shimmerOffset: $shimmerOffset,
-            transactions: $transactions,
-            showAddSheet: $showAddSheet,
-            cardsLocked: $cardsLocked,
-            showAddCardSheet: $showAddCardSheet,
-            cards: $cards,
-            selectedCardIndex: $selectedCardIndex,
-            showTransactionsSheet: $showTransactionsSheet,
-            categories: categories,
+                userId: session.user?.id,
+	            firstName: name,
+	            selectedPeriod: $selectedPeriod,
+	            shimmerOffset: $shimmerOffset,
+	            transactions: $transactions,
+	            showAddSheet: $showAddSheet,
+	            cardsLocked: $cardsLocked,
+	            showAddCardSheet: $showAddCardSheet,
+	            cards: $cards,
+	            overLimitCardIds: overLimitCardIds,
+	            selectedCardIndex: $selectedCardIndex,
+	            showTransactionsSheet: $showTransactionsSheet,
+	            categories: categories,
             netBalance: net,
             totalIncome: income,
             totalExpenses: totalExpensesMagnitude,
             lifetimeIncome: lifetimeIncome,
             lifetimeExpenses: lifetimeExpensesMagnitude,
-            categoryBreakdown: breakdown, filteredTransactions: filtered,
-            onAddCard: { showAddCardSheet = true },
+            incomeCategoryBreakdown: incomeBreakdown,
+            expenseCategoryBreakdown: breakdown,
+            filteredTransactions: filtered,
+	            onAddCard: { showAddCardSheet = true },
             onAddTransaction: {
-                withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
-                    showAddSheet = true
+                if cards.isEmpty {
+                    withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                        showAddCardSheet = true
+                    }
+                } else {
+                    withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                        showAddSheet = true
+                    }
                 }
             },
-            onNewCategory: { addCategoryIfNeeded($0) },
-            onSyncTransaction: { tx in
-                syncTransaction(tx)
+            onNewCategory: { name in
+                addCategoryIfNeeded(name)
+                syncCategoryRemote(name)
             },
-            onSyncCard: { card in syncCard(card) },
-            onAdjustBalance: { tx in adjustBalance(for: tx) }
-        )
-    }
+	            onSyncTransaction: { tx in
+	                lastLocallyAddedTransactionId = tx.id
+	                syncTransaction(tx)
+	            },
+	            onSyncCard: { card in syncCard(card) },
+	            onAdjustBalance: { tx in adjustBalance(for: tx) },
+	            onOpenCards: {
+	                withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+	                    showCardsManagerSheet = true
+	                }
+	            }
+	        )
+	    }
 
-    private func authenticateCards() {
+    private func authenticateCards(userInitiated: Bool) {
         if !requireCardUnlock {
             cardsLocked = false
             return
@@ -217,6 +468,8 @@ var body: some View {
             cardsLocked = false
             return
         }
+        guard !cardUnlockInProgress else { return }
+        cardUnlockInProgress = true
 
         let context = LAContext()
         var error: NSError?
@@ -224,12 +477,25 @@ var body: some View {
             context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Unlock your cards") { success, _ in
                 DispatchQueue.main.async {
                     cardsLocked = !success
+                    cardUnlockInProgress = false
                 }
             }
         } else {
             cardsLocked = false
+            cardUnlockInProgress = false
         }
     }
+
+    @State private var cachedFilteredIndices: [Int] = []
+    @State private var cachedTotalIncome: Double = 0
+    @State private var cachedTotalExpenses: Double = 0
+    @State private var cachedCategoryBreakdown: [String: Double] = [:]
+    @State private var cachedIncomeCategoryBreakdown: [String: Double] = [:]
+    @State private var cachedLifetimeIncome: Double = 0
+    @State private var cachedLifetimeExpenses: Double = 0
+    @State private var cachePeriod: Period = .monthly
+    @State private var cacheCardIndex: Int = 0
+    @State private var cacheTransactionCount: Int = 0
 
     private var periodStart: Date {
         let calendar = Calendar.current
@@ -258,91 +524,143 @@ var body: some View {
     }
 
     private var filteredTransactions: [Transaction] {
-        let byPeriod = transactions.filter { $0.date >= periodStart }
-        let periodScoped = byPeriod.isEmpty ? transactions : byPeriod
-        guard let cardId = selectedCardId else { return periodScoped }
-        let assigned = periodScoped.filter { $0.cardId == cardId }
-        if !assigned.isEmpty { return assigned }
-
-        let unassigned = periodScoped.filter { $0.cardId == nil }
-        let allUnassigned = periodScoped.allSatisfy { $0.cardId == nil }
-        if cards.count == 1 || allUnassigned {
-            return unassigned
+        if cachedFilteredIndices.isEmpty {
+            return []
         }
-        return []
+        return cachedFilteredIndices.map { transactions[$0] }
+    }
+
+    private func updateFilteredTransactionsCache() {
+        DispatchQueue.main.async { [self] in
+            updateFilteredTransactionsCacheSync()
+        }
+    }
+    
+    private func updateFilteredTransactionsCacheSync() {
+        let needsUpdate = cachePeriod != selectedPeriod || 
+                         cacheCardIndex != selectedCardIndex || 
+                         cacheTransactionCount != transactions.count ||
+                         cachedFilteredIndices.isEmpty
+        
+        guard needsUpdate else { return }
+        
+        var indices: [Int] = []
+        let periodStartDate = periodStart
+        
+        for (index, tx) in transactions.enumerated() {
+            guard tx.date >= periodStartDate else { continue }
+            
+            if let cardId = selectedCardId {
+                if tx.cardId == cardId {
+                    indices.append(index)
+                } else if tx.cardId == nil {
+                    let allUnassigned = transactions.allSatisfy { $0.cardId == nil }
+                    if cards.count == 1 || allUnassigned {
+                        indices.append(index)
+                    }
+                }
+            } else {
+                indices.append(index)
+            }
+        }
+        
+        cachePeriod = selectedPeriod
+        cacheCardIndex = selectedCardIndex
+        cacheTransactionCount = transactions.count
+        cachedFilteredIndices = indices
+        
+        var income: Double = 0
+        var expenses: Double = 0
+        var expenseBreakdown: [String: Double] = [:]
+        var incomeBreakdown: [String: Double] = [:]
+        
+        for index in indices {
+            let tx = transactions[index]
+            if tx.kind == .income {
+                income += tx.amount
+                incomeBreakdown[tx.category, default: 0] += abs(tx.amount)
+            } else {
+                expenses += abs(tx.amount)
+                expenseBreakdown[tx.category, default: 0] += abs(tx.amount)
+            }
+        }
+        
+        cachedTotalIncome = income
+        cachedTotalExpenses = expenses
+        cachedCategoryBreakdown = expenseBreakdown
+        cachedIncomeCategoryBreakdown = incomeBreakdown
+        
+        if cacheTransactionCount != transactions.count {
+            cachedLifetimeIncome = 0
+            cachedLifetimeExpenses = 0
+            for tx in transactions {
+                if tx.kind == .income {
+                    cachedLifetimeIncome += tx.amount
+                } else {
+                    cachedLifetimeExpenses += abs(tx.amount)
+                }
+            }
+        }
     }
 
     private var lifetimeIncome: Double {
-        transactions
-            .filter { $0.kind == .income }
-            .reduce(0) { $0 + $1.amount }
+        return cachedLifetimeIncome
     }
 
     private var lifetimeExpensesMagnitude: Double {
-        transactions
-            .filter { $0.kind == .expense }
-            .reduce(0) { $0 + abs($1.amount) }
+        return cachedLifetimeExpenses
     }
 
     private var totalIncome: Double {
-        filteredTransactions
-            .filter { $0.kind == .income }
-            .reduce(0) { $0 + $1.amount }
+        return cachedTotalIncome
     }
 
     private var totalExpensesMagnitude: Double {
-        filteredTransactions
-            .filter { $0.kind == .expense }
-            .reduce(0) { $0 + abs($1.amount) }
+        return cachedTotalExpenses
     }
 
     private var netBalance: Double {
-        totalIncome - totalExpensesMagnitude
+        return cachedTotalIncome - cachedTotalExpenses
     }
 
     private var categoryBreakdown: [String: Double] {
-        filteredTransactions
-            .filter { $0.kind == .expense }
-            .reduce(into: [:]) { partialResult, transaction in
-                partialResult[transaction.category, default: 0] += abs(transaction.amount)
-            }
+        return cachedCategoryBreakdown
     }
 
-    private func loadPersistedData() {
+    private var incomeCategoryBreakdown: [String: Double] {
+        return cachedIncomeCategoryBreakdown
+    }
+
+	    private func loadPersistedData() {
         restoreCardsFromDisk()
         restoreTransactionsFromDisk()
         restoreCategoriesFromDisk()
 
-        Task {
-            guard let userId = session.user?.id else { return }
-            if cards.isEmpty {
-                if let remoteCards = try? await APIClient.shared.fetchCards(userId: userId), !remoteCards.isEmpty {
-                    await MainActor.run {
-                        cards = remoteCards
-                        saveCards()
-                    }
-                }
-            }
-            if transactions.isEmpty {
-                if let remoteTx = try? await APIClient.shared.fetchTransactions(userId: userId), !remoteTx.isEmpty {
-                    await MainActor.run {
-                        let normalized = attachSingleCardId(remoteTx)
-                        let merged = mergeTransactionsWithLocal(normalized)
-                        transactions = merged
-                        saveTransactions()
-                    }
-                }
-            }
-        }
+	        refreshFromServer()
     }
 
-    @MainActor
-    private func restoreCardsFromDisk() {
-        if let storedCards: [CardInfo] = SecureStore.load([CardInfo].self, key: "cards"), !storedCards.isEmpty {
-            cards = storedCards
-            if requireCardUnlock { cardsLocked = true }
-        }
-    }
+	    @MainActor
+	    private func restoreCardsFromDisk() {
+	        if let storedCards: [CardInfo] = SecureStore.load([CardInfo].self, key: "cards"), !storedCards.isEmpty {
+	            cards = storedCards
+	        }
+	    }
+
+	    private func mergeCardsPreservingOrder(remote: [CardInfo], local: [CardInfo]) -> [CardInfo] {
+	        guard !local.isEmpty else { return remote }
+	        let remoteById = Dictionary(uniqueKeysWithValues: remote.map { ($0.id, $0) })
+	        var result: [CardInfo] = []
+	        result.reserveCapacity(remote.count)
+	        for c in local {
+	            if let r = remoteById[c.id] {
+	                result.append(r)
+	            }
+	        }
+	        for r in remote where !result.contains(where: { $0.id == r.id }) {
+	            result.append(r)
+	        }
+	        return result
+	    }
 
     @MainActor
     private func restoreTransactionsFromDisk() {
@@ -402,24 +720,56 @@ var body: some View {
         }
     }
 
+    private func syncCategoryRemote(_ name: String) {
+        guard let userId = session.user?.id else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        Task {
+            do {
+                let remote = try await APIClient.shared.createCategory(userId: userId, name: trimmed)
+                await MainActor.run {
+                    categories = remote
+                    saveCategories()
+                    refreshFromServer()
+                }
+            } catch {
+            }
+        }
+    }
+
     private func syncCard(_ card: CardInfo) {
         guard let userId = session.user?.id else { return }
         Task {
             do {
                 try await APIClient.shared.saveCard(userId: userId, card: card)
+                await MainActor.run {
+                    refreshFromServer()
+                }
             } catch {
-                print("Save card failed:", error)
             }
         }
     }
 
     private func syncTransaction(_ tx: Transaction) {
         guard let userId = session.user?.id else { return }
+        var outbound = tx
+        if outbound.cardId == nil {
+            if cards.count == 1 {
+                outbound.cardId = cards.first?.id
+            } else if cards.indices.contains(selectedCardIndex) {
+                outbound.cardId = cards[selectedCardIndex].id
+            }
+        }
+        guard outbound.cardId != nil else {
+            return
+        }
         Task {
             do {
-                try await APIClient.shared.saveTransaction(userId: userId, transaction: tx)
+                try await APIClient.shared.saveTransaction(userId: userId, transaction: outbound)
+                await MainActor.run {
+                    refreshFromServer()
+                }
             } catch {
-                print("Save transaction failed:", error)
             }
         }
     }
@@ -429,8 +779,10 @@ var body: some View {
         Task {
             do {
                 try await APIClient.shared.updateCard(userId: userId, card: card)
+                await MainActor.run {
+                    refreshFromServer()
+                }
             } catch {
-                print("Update card failed:", error)
             }
         }
     }
@@ -440,8 +792,10 @@ var body: some View {
         Task {
             do {
                 try await APIClient.shared.deleteCard(userId: userId, cardId: card.id)
+                await MainActor.run {
+                    refreshFromServer()
+                }
             } catch {
-                print("Delete card failed:", error)
             }
         }
     }
@@ -463,67 +817,61 @@ var body: some View {
 }
 
 // MARK: - Tabs
-struct HomeDashboard: View {
+	struct HomeDashboard: View {
+        var userId: String?
+    var firstName: String
     @Binding var selectedPeriod: Period
     @Binding var shimmerOffset: CGFloat
     @Binding var transactions: [Transaction]
     @Binding var showAddSheet: Bool
-    @Binding var cardsLocked: Bool
-    @Binding var showAddCardSheet: Bool
-    @Binding var cards: [CardInfo]
-    @Binding var selectedCardIndex: Int
-    @Binding var showTransactionsSheet: Bool
+	    @Binding var cardsLocked: Bool
+	    @Binding var showAddCardSheet: Bool
+	    @Binding var cards: [CardInfo]
+	    var overLimitCardIds: Set<UUID>
+	    @Binding var selectedCardIndex: Int
+	    @Binding var showTransactionsSheet: Bool
+	    @State private var pendingAddFromTransactionsSheet = false
     var categories: [String]
     var netBalance: Double
     var totalIncome: Double
     var totalExpenses: Double
     var lifetimeIncome: Double
     var lifetimeExpenses: Double
-    var categoryBreakdown: [String: Double]
+    var incomeCategoryBreakdown: [String: Double]
+    var expenseCategoryBreakdown: [String: Double]
     var filteredTransactions: [Transaction]
     var onAddCard: () -> Void
     var onAddTransaction: () -> Void
-    var onNewCategory: (String) -> Void
-    var onSyncTransaction: (Transaction) -> Void
-    var onSyncCard: (CardInfo) -> Void
-    var onAdjustBalance: (Transaction) -> Void
+	    var onNewCategory: (String) -> Void
+	    var onSyncTransaction: (Transaction) -> Void
+	    var onSyncCard: (CardInfo) -> Void
+	    var onAdjustBalance: (Transaction) -> Void
+	    var onOpenCards: () -> Void
 
-    var body: some View {
-        ZStack {
-            AnimatedBackground()
+	    var body: some View {
+	        ZStack {
+	            AnimatedBackground()
+	                .allowsHitTesting(false)
 
-            ScrollView(showsIndicators: false) {
-            VStack(spacing: 22) {
-                CardCarousel(
-                    cards: cards,
-                    selectedIndex: $selectedCardIndex,
-                    shimmerOffset: shimmerOffset,
-                    onAdd: onAddCard
-                )
-
-                PeriodPicker(selectedPeriod: $selectedPeriod)
-
-                HStack(spacing: 14) {
-                    MetricCard(title: "Income (all time)", amount: lifetimeIncome, icon: "arrow.down.right.circle.fill", tint: Palette.accentAlt)
-                    MetricCard(title: "Expenses (all time)", amount: -lifetimeExpenses, icon: "arrow.up.right.circle.fill", tint: Palette.accent)
-                }
-
-                SnapshotCard(
-                    title: "Spending Overview",
-                    subtitle: selectedPeriod.title,
-                    income: totalIncome,
-                    expenses: totalExpenses,
-                        onViewAll: { showTransactionsSheet = true },
-                        onAdd: onAddTransaction
-                    )
-
-                    TransactionsCard(transactions: filteredTransactions, onAdd: onAddTransaction)
-                }
-                .padding(.horizontal)
-                .padding(.top, 12)
-                .padding(.bottom, 28)
-            }
-        }
+		            CubertoDashboardLayout(
+                        userId: userId,
+		                firstName: firstName,
+		                selectedPeriod: $selectedPeriod,
+		                totalBalance: totalBalance,
+	                income: totalIncome,
+	                expenses: totalExpenses,
+	                cards: cards,
+	                selectedCardIndex: $selectedCardIndex,
+	                transactions: filteredTransactions,
+	                incomeCategoryBreakdown: incomeCategoryBreakdown,
+	                expenseCategoryBreakdown: expenseCategoryBreakdown,
+	                overLimitCardIds: overLimitCardIds,
+	                onAddTransaction: onAddTransaction,
+	                onViewAllTransactions: { showTransactionsSheet = true },
+	                onAddCard: onAddCard,
+	                onOpenCards: onOpenCards
+	            )
+	        }
         .onAppear {
             withAnimation(.linear(duration: 6).repeatForever(autoreverses: false)) {
                 shimmerOffset = 300
@@ -532,25 +880,44 @@ struct HomeDashboard: View {
         .safeAreaInset(edge: .top) {
             Color.clear.frame(height: 12)
         }
-        .sheet(isPresented: $showAddCardSheet) {
-            AddCardSheet { card in
-                cards.append(card)
-                onSyncCard(card)
-                cardsLocked = false
-            }
+	        .sheet(isPresented: $showAddCardSheet) {
+	            AddCardSheet { card in
+	                cards.append(card)
+	                onSyncCard(card)
+	                cardsLocked = false
+	            }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
         }
-        .sheet(isPresented: $showTransactionsSheet) {
-            AllTransactionsSheet(transactions: transactions, onAdd: onAddTransaction)
-        }
-        .sheet(isPresented: $showAddSheet) {
-            AddTransactionSheet(
-                categories: categories,
+	        .sheet(isPresented: $showTransactionsSheet) {
+	            AllTransactionsSheet(transactions: transactions) {
+	                pendingAddFromTransactionsSheet = true
+	                showTransactionsSheet = false
+	            }
+	        }
+	        .onChange(of: showTransactionsSheet) { _, isPresented in
+	            guard !isPresented, pendingAddFromTransactionsSheet else { return }
+	            pendingAddFromTransactionsSheet = false
+	            DispatchQueue.main.async {
+	                withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+	                    showAddSheet = true
+	                }
+	            }
+	        }
+	        .sheet(isPresented: $showAddSheet) {
+	            AddTransactionSheet(
+	                categories: categories,
                 onSave: { newTransaction in
                     var tx = newTransaction
                     if tx.cardId == nil, cards.indices.contains(selectedCardIndex) {
                         tx.cardId = cards[selectedCardIndex].id
+                    }
+                    guard tx.cardId != nil else {
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+                            showAddSheet = false
+                            showAddCardSheet = true
+                        }
+                        return
                     }
                     withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
                         transactions.insert(tx, at: 0)
@@ -564,47 +931,54 @@ struct HomeDashboard: View {
             )
         }
     }
-}
+
+	    private var totalBalance: Double {
+	        cards.reduce(0) { $0 + ($1.balance ?? 0) }
+	    }
+	}
 
 struct PlaceholderTab: View {
-    var title: String
-    var body: some View {
-        ZStack {
-            AnimatedBackground()
-            Text("\(title) coming soon")
-                .foregroundColor(Palette.primary.opacity(0.8))
-                .font(.headline)
-                .padding()
-                .background(Palette.card, in: RoundedRectangle(cornerRadius: 16))
-                .overlay(RoundedRectangle(cornerRadius: 16).stroke(Palette.stroke, lineWidth: 1))
-        }
-    }
-}
+	    var title: String
+	    var body: some View {
+	        ZStack {
+	            AnimatedBackground()
+	                .allowsHitTesting(false)
 
-// MARK: - Settings / Support
-struct SettingsTab: View {
-    @EnvironmentObject private var session: SessionManager
-    @Binding var categories: [String]
-    @Binding var requireCardUnlock: Bool
-    @Binding var supportTickets: [SupportTicket]
-    @Binding var showSupportSheet: Bool
-    var onToggleCardLock: (Bool) -> Void
+	            Text("\(title) coming soon")
+	                .foregroundColor(Palette.primary.opacity(0.8))
+	                .font(.headline)
+	                .padding()
+	                .glassCard(cornerRadius: 16, tint: [Palette.accentAlt, Palette.accent])
+	        }
+	    }
+	}
 
-    var body: some View {
-        ZStack {
-            AnimatedBackground()
-            ScrollView {
-                VStack(spacing: 18) {
-                    settingsCard
-                    categoriesCard
-                    supportCard
-                }
-                .padding()
+	// MARK: - Settings / Support
+	struct SettingsTab: View {
+	    @EnvironmentObject private var session: SessionManager
+	    @Binding var categories: [String]
+	    @Binding var requireCardUnlock: Bool
+	    var onToggleCardLock: (Bool) -> Void
+
+	    var body: some View {
+	        ZStack {
+	            AnimatedBackground()
+	                .allowsHitTesting(false)
+
+		            ScrollView {
+		                VStack(spacing: 18) {
+		                    settingsCard
+		                    categoriesCard
+	                }
+                .frame(maxWidth: LayoutMetrics.maxContentWidth)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                .padding(.vertical, 16)
             }
         }
     }
 
-    private var settingsCard: some View {
+	    private var settingsCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Text("Personalize")
@@ -667,13 +1041,12 @@ struct SettingsTab: View {
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.red.opacity(0.4), lineWidth: 1))
                 .shadow(color: Color.red.opacity(0.15), radius: 10, y: 6)
             }
-        }
-        .padding()
-            .background(Palette.card, in: RoundedRectangle(cornerRadius: 18))
-            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Palette.stroke, lineWidth: 1))
-    }
+	        }
+	        .padding()
+	        .glassCard(cornerRadius: 18, tint: [Palette.accentAlt, Palette.accent])
+	    }
 
-    private var categoriesCard: some View {
+	    private var categoriesCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Text("Categories")
@@ -682,7 +1055,18 @@ struct SettingsTab: View {
                 Spacer()
                 if !categories.isEmpty {
                     Button {
-                        categories.removeAll()
+                        Task {
+                            guard let userId = session.user?.id else {
+                                await MainActor.run { categories.removeAll() }
+                                return
+                            }
+                            do {
+                                let remote = try await APIClient.shared.clearCategories(userId: userId)
+                                await MainActor.run { categories = remote }
+                            } catch {
+                                await MainActor.run { categories.removeAll() }
+                            }
+                        }
                     } label: {
                         Text("Clear")
                             .font(.caption.weight(.semibold))
@@ -713,65 +1097,81 @@ struct SettingsTab: View {
                 }
                 .padding(.top, 6)
             }
-        }
-        .padding()
-        .background(Palette.card, in: RoundedRectangle(cornerRadius: 18))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Palette.stroke, lineWidth: 1))
-    }
+	        }
+	        .padding()
+	        .glassCard(cornerRadius: 18, tint: [Palette.accent, Palette.success])
+	    }
 
-    private var supportCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Support tickets")
-                    .font(.title3.bold())
-                    .foregroundColor(Palette.primary)
-                Spacer()
-                Button {
-                    showSupportSheet = true
-                } label: {
-                    Label("New ticket", systemImage: "plus.circle.fill")
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.vertical, 8)
-                        .padding(.horizontal, 12)
-                        .background(Palette.accentAlt, in: Capsule())
-                        .foregroundColor(.white)
-                }
-            }
+	}
 
-            VStack(spacing: 10) {
-                ForEach(supportTickets) { ticket in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(ticket.subject)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundColor(Palette.primary)
-                        }
-                        Spacer()
-                        Text(ticket.status.rawValue.capitalized)
-                            .font(.caption.weight(.bold))
-                            .foregroundColor(ticket.status == .open ? Palette.accent : Palette.accentAlt)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(Palette.mutedFill, in: Capsule())
-                    }
-                    .padding()
-                    .background(Palette.card, in: RoundedRectangle(cornerRadius: 14))
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Palette.stroke, lineWidth: 1))
-                }
-                if supportTickets.isEmpty {
-                    Text("No tickets yet. Create one to reach support.")
-                        .font(.footnote)
-                        .foregroundColor(Palette.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.top, 6)
-                }
-            }
-        }
-        .padding()
-        .background(Palette.card, in: RoundedRectangle(cornerRadius: 18))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Palette.stroke, lineWidth: 1))
-    }
-}
+	// MARK: - Tickets
+	struct TicketsTab: View {
+	    @Binding var tickets: [SupportTicket]
+	    @Binding var showNewTicket: Bool
+
+	    var body: some View {
+	        ZStack {
+	            AnimatedBackground()
+	                .allowsHitTesting(false)
+
+	            ScrollView {
+	                VStack(alignment: .leading, spacing: 14) {
+	                    HStack {
+	                        Text("Tickets")
+	                            .font(.largeTitle.bold())
+	                            .foregroundColor(Palette.primary)
+	                        Spacer()
+	                        Button {
+	                            showNewTicket = true
+	                        } label: {
+	                            Label("New", systemImage: "plus")
+	                                .font(.subheadline.weight(.semibold))
+	                                .padding(.vertical, 8)
+	                                .padding(.horizontal, 12)
+	                                .background(Palette.accentAlt, in: Capsule())
+	                                .foregroundColor(.white)
+	                        }
+	                        .buttonStyle(PressableButtonStyle())
+	                    }
+
+	                    if tickets.isEmpty {
+	                        EmptyStateView(title: "No tickets", message: "Create a ticket to reach support.")
+	                            .glassCard(cornerRadius: 18, tint: [Palette.accentAlt, Palette.accent])
+	                    } else {
+	                        VStack(spacing: 10) {
+	                            ForEach(tickets) { ticket in
+	                                HStack {
+	                                    VStack(alignment: .leading, spacing: 4) {
+	                                        Text(ticket.subject)
+	                                            .font(.subheadline.weight(.semibold))
+	                                            .foregroundColor(Palette.primary)
+	                                        Text(ticket.detail)
+	                                            .font(.caption)
+	                                            .foregroundColor(Palette.secondary)
+	                                            .lineLimit(2)
+	                                    }
+	                                    Spacer()
+	                                    Text(ticket.status.rawValue.capitalized)
+	                                        .font(.caption.weight(.bold))
+	                                        .foregroundColor(ticket.status == .open ? Palette.accent : Palette.accentAlt)
+	                                        .padding(.horizontal, 10)
+	                                        .padding(.vertical, 6)
+	                                        .background(Palette.mutedFill, in: Capsule())
+	                                }
+	                                .padding()
+	                                .glassCard(cornerRadius: 18, tint: [Palette.cardAlt, Palette.accentAlt])
+	                            }
+	                        }
+	                    }
+	                }
+	                .frame(maxWidth: LayoutMetrics.maxContentWidth)
+	                .frame(maxWidth: .infinity, alignment: .center)
+	                .padding(.horizontal, LayoutMetrics.horizontalPadding)
+	                .padding(.vertical, 16)
+	            }
+	        }
+	    }
+	}
 
 private struct SupportTicketSheet: View {
     var onSubmit: (String, String) -> Void
@@ -814,7 +1214,8 @@ struct CardsTab: View {
     var requireCardUnlock: Bool
     @Binding var locked: Bool
     @Binding var showAddCardSheet: Bool
-    var unlock: () -> Void
+    var overLimitCardIds: Set<UUID> = []
+    var unlock: (_ userInitiated: Bool) -> Void
     var onSelect: (CardInfo) -> Void
     var onSyncCard: (CardInfo) -> Void
     var onDeleteCard: (CardInfo) -> Void
@@ -866,7 +1267,7 @@ struct CardsTab: View {
                                 .font(.subheadline)
                                 .foregroundColor(Palette.secondary)
                             Button {
-                                unlock()
+                                unlock(true)
                             } label: {
                                 Label("Unlock", systemImage: "lock.open.fill")
                                     .font(.subheadline.weight(.semibold))
@@ -881,22 +1282,23 @@ struct CardsTab: View {
                         .background(Palette.card, in: RoundedRectangle(cornerRadius: 16))
                         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Palette.stroke, lineWidth: 1))
                     } else {
-                        VStack(spacing: 12) {
+                        LazyVStack(spacing: 12) {
                             ForEach(Array(cards.enumerated()), id: \.element.id) { idx, card in
-                                CardDetailRow(card: card, currencyCode: currencyCode, index: idx)
+                                CardDetailRow(card: card, currencyCode: currencyCode, index: idx, isOverLimit: overLimitCardIds.contains(card.id))
                                     .onTapGesture { onSelect(card) }
                             }
                         }
                     }
                 }
-                .padding()
+                .frame(maxWidth: LayoutMetrics.maxContentWidth, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                .padding(.vertical, 16)
             }
         }
         .onAppear {
             if !requireCardUnlock {
                 locked = false
-            } else {
-                unlock()
             }
         }
     }
@@ -906,9 +1308,14 @@ private struct CardDetailRow: View {
     var card: CardInfo
     var currencyCode: String
     var index: Int
+    var isOverLimit: Bool
     private var theme: CardTheme.Theme { CardTheme.theme(for: card, index: index) }
 
     var body: some View {
+        let strokeColors = isOverLimit ? [Color.red.opacity(0.95), Color.orange.opacity(0.7)] : theme.stroke
+        let glowColor = isOverLimit ? Color.red : theme.glow
+        let limits = card.effectiveLimitsInDisplayOrder()
+
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(card.nickname.isEmpty ? "Card" : card.nickname)
@@ -926,13 +1333,13 @@ private struct CardDetailRow: View {
                         .font(.subheadline.weight(.semibold))
                 }
             }
-            if let limit = card.limit {
+            ForEach(limits, id: \.period) { entry in
                 HStack {
-                    Text("Limit")
-                        .foregroundColor(Palette.secondary)
+                    Text("\(entry.period.title) Limit")
+                        .foregroundColor(isOverLimit ? Color.red.opacity(0.9) : Palette.secondary)
                     Spacer()
-                    Text(limit, format: .currency(code: currencyCode))
-                        .foregroundColor(Palette.primary)
+                    Text(entry.limit, format: .currency(code: currencyCode))
+                        .foregroundColor(isOverLimit ? Color.red : Palette.primary)
                         .font(.subheadline.weight(.semibold))
                 }
             }
@@ -947,84 +1354,161 @@ private struct CardDetailRow: View {
             ),
             in: RoundedRectangle(cornerRadius: 16)
         )
+	        .overlay(
+	            Group {
+	                if isOverLimit {
+                        ZStack {
+                            RadialGradient(
+                                colors: [Color.red.opacity(0.42), .clear],
+                                center: .topLeading,
+                                startRadius: 0,
+                                endRadius: 160
+                            )
+                            RadialGradient(
+                                colors: [Color.red.opacity(0.36), .clear],
+                                center: .topTrailing,
+                                startRadius: 0,
+                                endRadius: 160
+                            )
+                            RadialGradient(
+                                colors: [Color.red.opacity(0.34), .clear],
+                                center: .bottomLeading,
+                                startRadius: 0,
+                                endRadius: 160
+                            )
+                            RadialGradient(
+                                colors: [Color.red.opacity(0.40), .clear],
+                                center: .bottomTrailing,
+                                startRadius: 0,
+                                endRadius: 160
+                            )
+                        }
+                        .blendMode(.screen)
+                        .blur(radius: 10)
+                        .mask(RoundedRectangle(cornerRadius: 16))
+	                }
+	            }
+	        )
         .overlay(
             RoundedRectangle(cornerRadius: 16)
                 .stroke(
                     LinearGradient(
-                        colors: theme.stroke,
+                        colors: strokeColors,
                         startPoint: .leading,
                         endPoint: .trailing
                     ),
                     lineWidth: 1
                 )
         )
-        .shadow(color: theme.glow.opacity(0.16), radius: 12, y: 8)
+        .shadow(color: glowColor.opacity(0.22), radius: 16, y: 8)
+        .shadow(color: isOverLimit ? Color.red.opacity(0.42) : .clear, radius: 34, y: 16)
+        .shadow(color: isOverLimit ? Color.red.opacity(0.24) : .clear, radius: 60, y: 28)
     }
 }
 
 // MARK: - Animated Background
 struct AnimatedBackground: View {
-    @State private var move = false
-    @State private var hueShift: Angle = .degrees(0)
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            let t = timeline.date.timeIntervalSinceReferenceDate
+
+            ZStack {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.02, green: 0.02, blue: 0.06),
+                        Color(red: 0.02, green: 0.03, blue: 0.08),
+                        Color(red: 0.01, green: 0.01, blue: 0.04)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+
+                LiquidBlob(
+                    time: t,
+                    baseX: 0.25,
+                    baseY: 0.22,
+                    radius: 260,
+                    colors: [Palette.accentAlt, Palette.accent],
+                    opacity: 0.22
+                )
+
+                LiquidBlob(
+                    time: t + 2.4,
+                    baseX: 0.80,
+                    baseY: 0.32,
+                    radius: 230,
+                    colors: [Color(red: 0.60, green: 0.38, blue: 0.92), Palette.accentAlt],
+                    opacity: 0.18
+                )
+
+                LiquidBlob(
+                    time: t + 5.1,
+                    baseX: 0.55,
+                    baseY: 0.88,
+                    radius: 320,
+                    colors: [Color(red: 0.28, green: 0.70, blue: 0.78), Palette.accent],
+                    opacity: 0.16
+                )
+
+                LiquidBlob(
+                    time: t + 7.8,
+                    baseX: 0.10,
+                    baseY: 0.78,
+                    radius: 240,
+                    colors: [Color(red: 0.90, green: 0.30, blue: 0.48), Palette.accentAlt],
+                    opacity: 0.14
+                )
+
+                Rectangle()
+                    .fill(.ultraThinMaterial)
+                    .opacity(0.02)
+
+                LinearGradient(
+                    colors: [
+                        Color.white.opacity(0.08),
+                        Color.clear,
+                        Color.black.opacity(0.62)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .blendMode(.overlay)
+            }
+            .ignoresSafeArea()
+        }
+    }
+}
+
+private struct LiquidBlob: View {
+    var time: TimeInterval
+    var baseX: CGFloat
+    var baseY: CGFloat
+    var radius: CGFloat
+    var colors: [Color]
+    var opacity: Double = 0.20
+    var saturation: Double = 0.55
 
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [
-                    Color(red: 0.04, green: 0.07, blue: 0.18),
-                    Color(red: 0.06, green: 0.12, blue: 0.26),
-                    Color(red: 0.03, green: 0.08, blue: 0.20)
-                ],
-                startPoint: move ? .topLeading : .bottomTrailing,
-                endPoint: move ? .bottomTrailing : .topLeading
-            )
-            .animation(.easeInOut(duration: 30).repeatForever(autoreverses: true), value: move)
+        GeometryReader { proxy in
+            let size = proxy.size
+            let x = size.width * baseX + sin(time * 0.35) * (size.width * 0.10)
+            let y = size.height * baseY + cos(time * 0.30) * (size.height * 0.10)
+            let blur = max(60, radius * 0.55)
 
-            AngularGradient(
-                gradient: Gradient(colors: [
-                    Color(red: 0.22, green: 0.64, blue: 0.92).opacity(0.15),
-                    Color(red: 0.36, green: 0.48, blue: 0.96).opacity(0.15),
-                    Color(red: 0.22, green: 0.64, blue: 0.92).opacity(0.15)
-                ]),
-                center: .center
-            )
-            .opacity(0.8)
-            .blur(radius: 140)
-            .rotationEffect(.degrees(move ? 360 : 0))
-            .animation(.linear(duration: 80).repeatForever(autoreverses: false), value: move)
-
-            RadialGradient(
-                gradient: Gradient(colors: [
-                    Color(red: 0.28, green: 0.74, blue: 0.98).opacity(0.26),
-                    Color(red: 0.44, green: 0.48, blue: 0.92).opacity(0.20),
-                    .clear.opacity(0.0)
-                ]),
-                center: move ? .bottomLeading : .topTrailing,
-                startRadius: 80,
-                endRadius: 720
-            )
-            .blur(radius: 240)
-            .animation(.easeInOut(duration: 18).repeatForever(autoreverses: true), value: move)
-
-            LinearGradient(
-                colors: [
-                    Color.white.opacity(0.03),
-                    Color.white.opacity(0.0)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .blendMode(.screen)
-            .opacity(0.6)
+            Circle()
+                .fill(
+                    AngularGradient(
+                        gradient: Gradient(colors: colors + colors),
+                        center: .center
+                    )
+                )
+                .frame(width: radius, height: radius)
+                .position(x: x, y: y)
+                .blur(radius: blur)
+                .saturation(saturation)
+                .opacity(opacity)
+                .blendMode(.screen)
         }
-        .hueRotation(hueShift)
-        .onAppear {
-            move.toggle()
-            withAnimation(.linear(duration: 90).repeatForever(autoreverses: true)) {
-                hueShift = .degrees(10)
-            }
-        }
-        .ignoresSafeArea()
     }
 }
 
@@ -1033,6 +1517,7 @@ struct CardCarousel: View {
     var cards: [CardInfo]
     @Binding var selectedIndex: Int
     var shimmerOffset: CGFloat
+    var overLimitCardIds: Set<UUID> = []
     var onAdd: () -> Void
     private let currencyCode = Locale.current.currency?.identifier ?? "USD"
 
@@ -1062,7 +1547,7 @@ struct CardCarousel: View {
             VStack(spacing: 8) {
                 TabView(selection: $selectedIndex) {
                     ForEach(Array(cards.enumerated()), id: \.element.id) { idx, card in
-                        CardHeader(card: card, shimmerOffset: shimmerOffset, index: idx)
+                        CardHeader(card: card, shimmerOffset: shimmerOffset, index: idx, isOverLimit: overLimitCardIds.contains(card.id))
                             .tag(idx)
                     }
                 }
@@ -1086,10 +1571,17 @@ private struct CardHeader: View {
     var card: CardInfo
     var shimmerOffset: CGFloat
     var index: Int
+    var isOverLimit: Bool
     private let currencyCode = Locale.current.currency?.identifier ?? "USD"
     private var theme: CardTheme.Theme { CardTheme.theme(for: card, index: index) }
 
     var body: some View {
+        let strokeColors = isOverLimit ? [Color.red.opacity(0.95), Color.orange.opacity(0.7)] : theme.stroke
+        let glowColor = isOverLimit ? Color.red : theme.glow
+        let limitAccent = isOverLimit ? Color.red : theme.accent
+        let primaryLimit = card.primaryLimitForDisplay()
+        let limitTitle = primaryLimit.map { "\($0.period.title) Limit" }
+
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 24)
                 .fill(
@@ -1103,7 +1595,7 @@ private struct CardHeader: View {
                     RoundedRectangle(cornerRadius: 24)
                         .stroke(
                             LinearGradient(
-                                colors: theme.stroke,
+                                colors: strokeColors,
                                 startPoint: .leading,
                                 endPoint: .trailing
                             ),
@@ -1111,7 +1603,49 @@ private struct CardHeader: View {
                         )
                         .blur(radius: 0.2)
                 )
-                .shadow(color: theme.glow.opacity(0.28), radius: 24, x: 0, y: 16)
+	                .overlay(
+	                    Group {
+	                        if isOverLimit {
+                                ZStack {
+                                    RadialGradient(
+                                        colors: [Color.red.opacity(0.52), .clear],
+                                        center: .topLeading,
+                                        startRadius: 0,
+                                        endRadius: 240
+                                    )
+                                    RadialGradient(
+                                        colors: [Color.red.opacity(0.44), .clear],
+                                        center: .topTrailing,
+                                        startRadius: 0,
+                                        endRadius: 240
+                                    )
+                                    RadialGradient(
+                                        colors: [Color.red.opacity(0.40), .clear],
+                                        center: .bottomLeading,
+                                        startRadius: 0,
+                                        endRadius: 240
+                                    )
+                                    RadialGradient(
+                                        colors: [Color.red.opacity(0.50), .clear],
+                                        center: .bottomTrailing,
+                                        startRadius: 0,
+                                        endRadius: 240
+                                    )
+                                }
+                                .blendMode(.screen)
+                                .blur(radius: 12)
+                                .mask(RoundedRectangle(cornerRadius: 24))
+	
+	                            RoundedRectangle(cornerRadius: 24)
+	                                .stroke(Color.red.opacity(0.65), lineWidth: 3)
+	                                .blur(radius: 12)
+	                                .blendMode(.screen)
+	                        }
+	                    }
+	                )
+                .shadow(color: glowColor.opacity(0.38), radius: 28, x: 0, y: 16)
+                .shadow(color: isOverLimit ? Color.red.opacity(0.50) : .clear, radius: 46, x: 0, y: 22)
+                .shadow(color: isOverLimit ? Color.red.opacity(0.28) : .clear, radius: 78, x: 0, y: 34)
                 .overlay(
                     LinearGradient(
                         colors: [.white.opacity(0.0), .white.opacity(0.3), .white.opacity(0.0)],
@@ -1123,12 +1657,43 @@ private struct CardHeader: View {
                     .animation(.easeInOut(duration: 5.5).repeatForever(autoreverses: false), value: shimmerOffset)
                 )
                 .background(
-                    RadialGradient(
-                        colors: [theme.glow.opacity(0.35), .clear],
-                        center: .center,
-                        startRadius: 60,
-                        endRadius: 340
-                    )
+                    Group {
+                        if isOverLimit {
+                            ZStack {
+                                RadialGradient(
+                                    colors: [glowColor.opacity(0.42), .clear],
+                                    center: .topLeading,
+                                    startRadius: 10,
+                                    endRadius: 360
+                                )
+                                RadialGradient(
+                                    colors: [glowColor.opacity(0.34), .clear],
+                                    center: .topTrailing,
+                                    startRadius: 10,
+                                    endRadius: 360
+                                )
+                                RadialGradient(
+                                    colors: [glowColor.opacity(0.30), .clear],
+                                    center: .bottomLeading,
+                                    startRadius: 10,
+                                    endRadius: 360
+                                )
+                                RadialGradient(
+                                    colors: [glowColor.opacity(0.40), .clear],
+                                    center: .bottomTrailing,
+                                    startRadius: 10,
+                                    endRadius: 360
+                                )
+                            }
+                        } else {
+                            RadialGradient(
+                                colors: [glowColor.opacity(0.35), .clear],
+                                center: .center,
+                                startRadius: 60,
+                                endRadius: 340
+                            )
+                        }
+                    }
                     .blur(radius: 50)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 24))
@@ -1151,8 +1716,8 @@ private struct CardHeader: View {
                 }
 
                 HStack(spacing: 10) {
-                    if let limit = card.limit {
-                        StatPill(title: "Limit", value: limit, currencyCode: currencyCode, accentColor: theme.accent)
+                    if let primaryLimit {
+                        StatPill(title: limitTitle ?? "Limit", value: primaryLimit.limit, currencyCode: currencyCode, highlight: isOverLimit, accentColor: limitAccent)
                     } else {
                         StatPill(title: "Status", label: "Active", accentColor: theme.accent)
                     }
@@ -1209,6 +1774,8 @@ private struct StatPill: View {
             Capsule()
                 .stroke(borderColor, lineWidth: 1)
         )
+        .shadow(color: highlight ? Color.red.opacity(0.40) : .clear, radius: 12, x: 0, y: 7)
+        .shadow(color: highlight ? Color.red.opacity(0.20) : .clear, radius: 22, x: 0, y: 12)
     }
 
     private var accentColors: [Color] {
@@ -1219,7 +1786,7 @@ private struct StatPill: View {
             ]
         }
         if highlight {
-            return [Palette.accentAlt.opacity(0.45), Palette.accent.opacity(0.3)]
+            return [Color.red.opacity(0.60), Color.orange.opacity(0.22)]
         }
         return [.white.opacity(0.12), .white.opacity(0.05)]
     }
@@ -1400,9 +1967,8 @@ struct SnapshotCard: View {
     var subtitle: String
     var income: Double
     var expenses: Double
-    var onViewAll: () -> Void
-    var onAdd: () -> Void
-    private let currencyCode = Locale.current.currency?.identifier ?? "USD"
+    var incomeCategoryBreakdown: [String: Double]
+    var expenseCategoryBreakdown: [String: Double]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1416,43 +1982,141 @@ struct SnapshotCard: View {
                         .foregroundColor(Palette.secondary)
                 }
                 Spacer()
-                HStack(spacing: 8) {
-                    Button(action: onViewAll) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "list.bullet.rectangle")
-                            Text("View all")
-                                .font(.subheadline.weight(.semibold))
-                        }
-                        .padding(.vertical, 8)
-                        .padding(.horizontal, 12)
-                        .background(
-                            LinearGradient(colors: [Palette.accentAlt.opacity(0.9), Palette.accent.opacity(0.8)],
-                                           startPoint: .leading, endPoint: .trailing),
-                            in: Capsule()
-                        )
-                        .foregroundColor(.white)
-                        .shadow(color: Palette.accentAlt.opacity(0.3), radius: 10, y: 5)
-                    }
-                }
             }
 
-            ProgressRow(
+            SpendingCategoryBar(
                 title: "Income",
-                value: income,
-                maxValue: max(income, expenses, 1),
-                tint: Palette.accentAlt
+                total: income,
+                breakdown: incomeCategoryBreakdown
             )
-            ProgressRow(
+
+            SpendingCategoryBar(
                 title: "Expenses",
-                value: expenses,
-                maxValue: max(income, expenses, 1),
-                tint: Palette.accent
+                total: expenses,
+                breakdown: expenseCategoryBreakdown
             )
         }
         .padding()
-        .background(Palette.card, in: RoundedRectangle(cornerRadius: 18))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Palette.stroke, lineWidth: 1))
+        .glassCard(cornerRadius: 18, tint: [Palette.accentAlt, Palette.accent], shadowColor: Palette.accentAlt)
     }
+}
+
+private struct SpendingCategoryBar: View {
+    var title: String
+    var total: Double
+    var breakdown: [String: Double]
+
+    private let currencyCode = Locale.current.currency?.identifier ?? "USD"
+
+    var body: some View {
+        let segments = buildSegments()
+        let segmentsTotal = segments.reduce(0.0) { $0 + $1.value }
+
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(title)
+                    .foregroundColor(Palette.primary)
+                Spacer()
+                Text(total, format: .currency(code: currencyCode))
+                    .foregroundColor(Palette.secondary)
+                    .font(.footnote.weight(.medium))
+            }
+
+            if segments.isEmpty {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Palette.mutedFill)
+                    .frame(height: 12)
+            } else {
+                SegmentedBar(segments: segments)
+                    .frame(height: 12)
+
+                VStack(spacing: 8) {
+                    ForEach(segments.prefix(6)) { seg in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 8) {
+                                Text(seg.name)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundColor(seg.color)
+                                    .lineLimit(1)
+                                Spacer()
+                                Text(seg.value, format: .currency(code: currencyCode))
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundColor(Palette.secondary)
+                            }
+
+                            GeometryReader { proxy in
+                                let ratio = segmentsTotal == 0 ? 0 : seg.value / segmentsTotal
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(Palette.mutedFill)
+                                    .overlay(alignment: .leading) {
+                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                            .fill(seg.color.gradient)
+                                            .frame(width: proxy.size.width * CGFloat(min(max(ratio, 0), 1)))
+                                            .animation(.easeInOut(duration: 0.4), value: seg.value)
+                                    }
+                            }
+                            .frame(height: 6)
+                            .drawingGroup()
+                        }
+                    }
+                }
+                .padding(.top, 2)
+            }
+        }
+    }
+
+    private func buildSegments() -> [CategorySegment] {
+        let cleaned = breakdown
+            .map { (name: $0.key, value: $0.value) }
+            .filter { $0.value > 0.0001 }
+            .sorted { $0.value > $1.value }
+
+        guard !cleaned.isEmpty else { return [] }
+
+        let maxSegments = 7
+        let head = Array(cleaned.prefix(maxSegments))
+        let other = cleaned.dropFirst(maxSegments).reduce(0.0) { $0 + $1.value }
+
+        var result = head.map {
+            CategorySegment(name: $0.name, value: $0.value, color: CategoryColors.color(for: $0.name))
+        }
+        if other > 0 {
+            result.append(CategorySegment(name: "Other", value: other, color: CategoryColors.color(for: "Other")))
+        }
+        return result
+    }
+}
+
+private struct SegmentedBar: View {
+    var segments: [CategorySegment]
+
+    var body: some View {
+        let total = segments.reduce(0.0) { $0 + $1.value }
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+
+        GeometryReader { proxy in
+            let width = proxy.size.width
+
+            HStack(spacing: 0) {
+                ForEach(segments) { seg in
+                    Rectangle()
+                        .fill(seg.color)
+                        .frame(width: total == 0 ? 0 : width * CGFloat(seg.value / total))
+                }
+            }
+            .clipShape(shape)
+            .overlay(shape.stroke(Color.white.opacity(0.10), lineWidth: 1))
+            .background(Palette.mutedFill, in: shape)
+        }
+        .drawingGroup()
+    }
+}
+
+private struct CategorySegment: Identifiable {
+    var id: String { name }
+    var name: String
+    var value: Double
+    var color: Color
 }
 
 // MARK: - Recent Transactions
@@ -1500,27 +2164,14 @@ struct TransactionsCard: View {
                     message: "Tap Add to log your first expense or income."
                 )
             } else {
-                VStack(spacing: 0) {
+                LazyVStack(spacing: 0) {
                     ForEach(transactions) { transaction in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(transaction.category)
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundColor(Palette.primary)
-                                Text(dateFormatter.string(from: transaction.date))
-                                    .font(.caption)
-                                    .foregroundColor(Palette.secondary)
-                            }
-                            Spacer()
-                            Text("\(transaction.kind == .income ? "+" : "-")\(abs(transaction.amount), format: .currency(code: currencyCode))")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundColor(transaction.kind == .income ? Palette.accentAlt : Palette.accent)
-                        }
-                        .padding(.vertical, 12)
-
-                        if transaction.id != transactions.last?.id {
-                            Divider().background(Palette.stroke)
-                        }
+                        TransactionRowView(
+                            transaction: transaction,
+                            dateFormatter: dateFormatter,
+                            currencyCode: currencyCode,
+                            showDivider: transaction.id != transactions.last?.id
+                        )
                     }
                 }
             }
@@ -1528,6 +2179,118 @@ struct TransactionsCard: View {
         .padding()
         .background(Palette.card, in: RoundedRectangle(cornerRadius: 18))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(Palette.stroke, lineWidth: 1))
+    }
+}
+
+private struct TransactionRowView: View {
+    let transaction: Transaction
+    let dateFormatter: DateFormatter
+    let currencyCode: String
+    let showDivider: Bool
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(transaction.category)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(Palette.primary)
+                Text(dateFormatter.string(from: transaction.date))
+                    .font(.caption)
+                    .foregroundColor(Palette.secondary)
+            }
+            Spacer()
+            Text("\(transaction.kind == .income ? "+" : "-")\(abs(transaction.amount), format: .currency(code: currencyCode))")
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(transaction.kind == .income ? Palette.accentAlt : Palette.accent)
+        }
+        .padding(.vertical, 12)
+        .drawingGroup()
+
+        if showDivider {
+            Divider().background(Palette.stroke)
+        }
+    }
+}
+
+private struct DashboardHeader: View {
+    var name: String
+    var netBalance: Double
+    var onAdd: () -> Void
+    private let currencyCode = Locale.current.currency?.identifier ?? "USD"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [Palette.accentAlt.opacity(0.95), Palette.accent.opacity(0.85)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 36, height: 36)
+                    .overlay(
+                        Text(String(name.prefix(1)).uppercased())
+                            .font(.headline.weight(.bold))
+                            .foregroundColor(.white)
+                    )
+                    .shadow(color: Palette.accent.opacity(0.35), radius: 12, y: 8)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Welcome back!")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(Palette.secondary)
+                    Text("Hello, \(name)!")
+                        .font(.title3.weight(.bold))
+                        .foregroundColor(Palette.primary)
+                }
+                Spacer()
+                Button(action: onAdd) {
+                    Image(systemName: "plus")
+                        .font(.headline.weight(.semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 34, height: 34)
+                        .background(.white.opacity(0.12), in: Circle())
+                        .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+            }
+
+            HStack {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Total Balance")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.white.opacity(0.75))
+                    Text(netBalance, format: .currency(code: currencyCode))
+                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                }
+                Spacer()
+                Image(systemName: "arrow.right")
+                    .font(.headline.weight(.bold))
+                    .foregroundColor(.white)
+                    .frame(width: 38, height: 38)
+                    .background(.white.opacity(0.14), in: Circle())
+                    .overlay(Circle().stroke(.white.opacity(0.22), lineWidth: 1))
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .background(
+                LinearGradient(
+                    colors: [Palette.accentAlt.opacity(0.95), Palette.accent.opacity(0.85)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                in: RoundedRectangle(cornerRadius: 24, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .stroke(.white.opacity(0.16), lineWidth: 1)
+            )
+            .shadow(color: Palette.accent.opacity(0.30), radius: 22, x: 0, y: 16)
+        }
+        .padding(.horizontal)
     }
 }
 

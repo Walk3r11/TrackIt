@@ -4,12 +4,7 @@ struct AppBackgroundModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background(
-                LinearGradient(
-                    colors: [Palette.backgroundTop, Palette.backgroundMid, Palette.backgroundBottom],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .ignoresSafeArea()
+                Color.clear
             )
     }
 }

@@ -27,50 +27,81 @@ enum SequenceGenerator {
 final class SessionManager: ObservableObject {
     @Published var user: UserProfile?
     @Published var token: String?
+    @Published var sessionValidated = false
     @Published var verifying = false
     @Published var restoredFromStorage = false
     @Published var isUnlocked = false
     @Published var unlocking = false
     private var lastUnlockPrompt: Date?
+    private var sessionCreatedAt: Date?
+    private let sessionDuration: TimeInterval = 60 * 60 * 24 * 60 // 2 months in seconds
 
-    var isAuthenticated: Bool { user != nil && token != nil }
+    var isAuthenticated: Bool { user != nil && token != nil && sessionValidated }
 
     init() {
-        user = SecureStore.load(UserProfile.self, key: "userProfile")
-        token = SecureStore.load(String.self, key: "authToken")
-        restoredFromStorage = user != nil && token != nil
+        user = nil
+        token = nil
+        restoredFromStorage = false
+        sessionValidated = false
         isUnlocked = false
+        restoreSessionFromStorage()
     }
 
     @MainActor
     func refreshSession() async {
-        guard let current = user else { return }
-        verifying = true
-        defer { verifying = false }
-        do {
-            if let latest = try await APIClient.shared.fetchUser(byEmail: current.email) {
-                user = latest
-                SecureStore.save(latest, key: "userProfile")
+        if let createdAt = sessionCreatedAt {
+            let now = Date()
+            if now.timeIntervalSince(createdAt) > sessionDuration {
+                logout()
+                return
             }
-        } catch {
-            // keep existing session if lookup failed for network reasons
+        }
+        
+        guard user != nil, token != nil else { return }
+
+        sessionValidated = true
+    }
+    
+    private func restoreSessionFromStorage() {
+        if let storedUser: UserProfile = SecureStore.load(UserProfile.self, key: "userProfile"),
+           let storedToken: String = SecureStore.load(String.self, key: "authToken"),
+           let storedTimestamp: TimeInterval = SecureStore.load(TimeInterval.self, key: "sessionCreatedAt") {
+            let storedDate = Date(timeIntervalSince1970: storedTimestamp)
+            let now = Date()
+            if now.timeIntervalSince(storedDate) <= sessionDuration {
+                self.user = storedUser
+                self.token = storedToken
+                self.sessionCreatedAt = storedDate
+                self.sessionValidated = true
+                self.restoredFromStorage = true
+            } else {
+                SecureStore.delete(keys: ["userProfile", "authToken", "sessionCreatedAt"])
+            }
         }
     }
 
     func setSession(user: UserProfile, token: String) {
         self.user = user
         self.token = token
-        SecureStore.save(user, key: "userProfile")
-        SecureStore.save(token, key: "authToken")
+        self.sessionCreatedAt = Date()
         restoredFromStorage = false
+        sessionValidated = true
         isUnlocked = false
         lastUnlockPrompt = nil
+        
+        SecureStore.save(user, key: "userProfile")
+        SecureStore.save(token, key: "authToken")
+        if let createdAt = sessionCreatedAt {
+            SecureStore.save(createdAt.timeIntervalSince1970, key: "sessionCreatedAt")
+        }
     }
 
     func logout() {
         user = nil
         token = nil
-        SecureStore.delete(keys: ["userProfile", "authToken", "cards", "transactions"])
+        sessionCreatedAt = nil
+        sessionValidated = false
+        SecureStore.delete(keys: ["userProfile", "authToken", "sessionCreatedAt", "cards", "transactions"])
         UserDefaults.standard.removeObject(forKey: "sequenceCounter")
         restoredFromStorage = false
         isUnlocked = false

@@ -5,6 +5,8 @@ struct TrackItApp: App {
     @StateObject private var session = SessionManager()
     @Environment(\.scenePhase) private var scenePhase
     @State private var blurActive = false
+    
+    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
         WindowGroup {
@@ -24,7 +26,6 @@ struct TrackItApp: App {
                 switch phase {
                 case .active:
                     blurActive = false
-                    Task { await session.refreshSession() }
                 case .inactive, .background:
                     blurActive = true
                 default:
@@ -42,5 +43,11 @@ struct TrackItApp: App {
                     : nil
             )
         }
+    }
+}
+
+class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        return .portrait
     }
 }

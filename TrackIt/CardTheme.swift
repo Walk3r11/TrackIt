@@ -9,7 +9,7 @@ enum CardTheme {
     }
 
     private static let presets: [Theme] = [
-        Theme( // default blue
+        Theme(
             background: [
                 Color(red: 0.10, green: 0.15, blue: 0.32),
                 Color(red: 0.09, green: 0.28, blue: 0.52),
