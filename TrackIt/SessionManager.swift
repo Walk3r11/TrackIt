@@ -34,7 +34,7 @@ final class SessionManager: ObservableObject {
     @Published var unlocking = false
     private var lastUnlockPrompt: Date?
     private var sessionCreatedAt: Date?
-    private let sessionDuration: TimeInterval = 60 * 60 * 24 * 60 // 2 months in seconds
+    private let sessionDuration: TimeInterval = 60 * 60 * 24 * 60 
 
     var isAuthenticated: Bool { user != nil && token != nil && sessionValidated }
 
