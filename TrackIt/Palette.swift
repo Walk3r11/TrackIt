@@ -13,5 +13,6 @@ enum Palette {
     static let accentAlt = Color(red: 0.50, green: 0.55, blue: 1.0)
     static let success = Color(red: 0.45, green: 0.92, blue: 0.62)
     static let danger = Color(red: 1.0, green: 0.38, blue: 0.50)
+    static let warning = Color(red: 1.0, green: 0.76, blue: 0.38)
     static let mutedFill = Color.white.opacity(0.08)
 }

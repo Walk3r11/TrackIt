@@ -5,13 +5,25 @@ struct GlassCardStyle: ViewModifier {
     var tint: [Color] = [Palette.accentAlt, Palette.accent]
     var shadowColor: Color? = nil
     var darkOverlayOpacity: Double = 0
+    var useMaterial: Bool = true
 
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         let shadow = shadowColor ?? tint.first ?? Palette.accent
+        let baseShadowOpacity = useMaterial ? 0.15 : 0.10
+        let shadowRadius: CGFloat = useMaterial ? 16 : 12
+        let shadowY: CGFloat = useMaterial ? 12 : 8
 
         return content
-            .background(.regularMaterial, in: shape)
+            .background(
+                Group {
+                    if useMaterial {
+                        shape.fill(.regularMaterial)
+                    } else {
+                        shape.fill(Palette.cardAlt)
+                    }
+                }
+            )
             .overlay(
                 Color.black.opacity(darkOverlayOpacity)
                     .clipShape(shape)
@@ -35,7 +47,7 @@ struct GlassCardStyle: ViewModifier {
             )
             .overlay(shape.stroke(Color.white.opacity(0.18), lineWidth: 1))
             .overlay(shape.stroke(Color.white.opacity(0.06), lineWidth: 2).blur(radius: 0.7).allowsHitTesting(false))
-            .shadow(color: shadow.opacity(0.20), radius: 26, x: 0, y: 18)
+            .shadow(color: shadow.opacity(baseShadowOpacity), radius: shadowRadius, x: 0, y: shadowY)
     }
 }
 
@@ -44,14 +56,16 @@ extension View {
         cornerRadius: CGFloat = 20,
         tint: [Color] = [Palette.accentAlt, Palette.accent],
         shadowColor: Color? = nil,
-        darkOverlayOpacity: Double = 0
+        darkOverlayOpacity: Double = 0,
+        useMaterial: Bool = true
     ) -> some View {
         modifier(
             GlassCardStyle(
                 cornerRadius: cornerRadius,
                 tint: tint,
                 shadowColor: shadowColor,
-                darkOverlayOpacity: darkOverlayOpacity
+                darkOverlayOpacity: darkOverlayOpacity,
+                useMaterial: useMaterial
             )
         )
     }

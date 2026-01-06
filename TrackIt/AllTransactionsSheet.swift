@@ -3,8 +3,8 @@ import SwiftUI
 struct AllTransactionsSheet: View {
     var transactions: [Transaction]
     var onAdd: () -> Void
-    private let currencyCode = Locale.current.currency?.identifier ?? "USD"
-    private let dateFormatter: DateFormatter = {
+    private let currencyCode = "EUR"
+    private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         return formatter
@@ -18,7 +18,7 @@ struct AllTransactionsSheet: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(transaction.category)
                                 .font(.headline)
-                            Text(dateFormatter.string(from: transaction.date))
+                            Text(Self.dateFormatter.string(from: transaction.date))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }

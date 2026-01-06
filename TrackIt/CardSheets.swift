@@ -8,15 +8,35 @@ struct AddTransactionSheet: View {
     var selectedCardId: UUID?
     @State private var amountText: String = ""
     @State private var category: String = ""
-    @State private var kind: Transaction.Kind = .expense
+    @State private var kind: Transaction.Kind? = nil
     @State private var date: Date = .now
+    @State private var showKindWarning: Bool = false
 
     var body: some View {
         NavigationView {
             Form {
                 Section(header: Text("Details")) {
+                    Picker("Type", selection: $kind) {
+                        Text("Select Type").tag(nil as Transaction.Kind?)
+                        Text("Expense").tag(Transaction.Kind.expense as Transaction.Kind?)
+                        Text("Income").tag(Transaction.Kind.income as Transaction.Kind?)
+                    }
+                    .foregroundColor(kind == nil ? Palette.warning : Palette.primary)
+                    
+                    if showKindWarning {
+                        HStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(Palette.warning)
+                            Text("Please select a transaction type!")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(Palette.warning)
+                        }
+                        .padding(.vertical, 8)
+                    }
+                    
                     TextField("Amount", text: $amountText)
                         .keyboardType(.decimalPad)
+                    
                     VStack(alignment: .leading, spacing: 8) {
                         TextField("Category", text: $category)
                         if !categories.isEmpty {
@@ -38,10 +58,7 @@ struct AddTransactionSheet: View {
                             }
                         }
                     }
-                    Picker("Type", selection: $kind) {
-                        Text("Expense").tag(Transaction.Kind.expense)
-                        Text("Income").tag(Transaction.Kind.income)
-                    }
+                    
                     DatePicker("Date", selection: $date, displayedComponents: .date)
                     Text(timeZoneInfo(for: date))
                         .font(.footnote)
@@ -62,7 +79,7 @@ struct AddTransactionSheet: View {
     }
 
     private var canSave: Bool {
-        parsedAmount != nil && !category.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        parsedAmount != nil && !category.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && kind != nil
     }
 
     private var parsedAmount: Double? {
@@ -76,9 +93,20 @@ struct AddTransactionSheet: View {
 
     private func save() {
         guard let rawAmount = parsedAmount else { return }
-        let amount = kind == .income ? abs(rawAmount) : -abs(rawAmount)
+        guard let transactionKind = kind else {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                showKindWarning = true
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                withAnimation {
+                    showKindWarning = false
+                }
+            }
+            return
+        }
+        let amount = transactionKind == .income ? abs(rawAmount) : -abs(rawAmount)
         let trimmedCategory = category.trimmingCharacters(in: .whitespacesAndNewlines)
-        let transaction = Transaction(cardId: selectedCardId, amount: amount, category: trimmedCategory, date: date, kind: kind)
+        let transaction = Transaction(cardId: selectedCardId, amount: amount, category: trimmedCategory, date: date, kind: transactionKind)
         withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
             if !categories.contains(where: { $0.caseInsensitiveCompare(trimmedCategory) == .orderedSame }) {
                 onNewCategory(trimmedCategory)

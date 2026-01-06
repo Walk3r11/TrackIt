@@ -90,3 +90,38 @@ enum Period: String, CaseIterable {
         }
     }
 }
+
+struct SupportTicket: Identifiable, Codable, Hashable {
+    enum Status: String, Codable { case open, pending, closed }
+    var id: UUID = UUID()
+    var subject: String
+    var detail: String
+    var status: Status = .open
+    
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+    
+    static func == (lhs: SupportTicket, rhs: SupportTicket) -> Bool {
+        lhs.id == rhs.id
+    }
+}
+
+struct ChatHistory: Identifiable, Codable {
+    var id: UUID = UUID()
+    var title: String
+    var messages: [ChatMessage]
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
+}
+
+struct ChatMessage: Identifiable, Codable, Equatable {
+    var id: UUID = UUID()
+    var role: String
+    var content: String
+    var timestamp: Date = Date()
+    
+    static func == (lhs: ChatMessage, rhs: ChatMessage) -> Bool {
+        lhs.id == rhs.id && lhs.role == rhs.role && lhs.content == rhs.content
+    }
+}

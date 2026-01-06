@@ -37,6 +37,8 @@ struct AuthView: View {
     @State private var verificationCode = ""
     @State private var status: String?
     @State private var loading = false
+    @State private var sendingVerification = false
+    @State private var pendingAuth: AuthResponse?
     @State private var error: String?
     @State private var didAppear = false
 
@@ -119,10 +121,10 @@ struct AuthView: View {
                                 in: RoundedRectangle(cornerRadius: 18, style: .continuous)
                             )
                             .foregroundStyle(.white)
-                            .shadow(color: Palette.accent.opacity(0.35), radius: 22, x: 0, y: 14)
+                            .shadow(color: Palette.accent.opacity(0.22), radius: 14, x: 0, y: 8)
                         }
                         .buttonStyle(PressableButtonStyle())
-                        .disabled(loading || !canSubmit)
+                        .disabled(loading || sendingVerification || !canSubmit)
 
                         if let status {
                             Text(status)
@@ -141,11 +143,32 @@ struct AuthView: View {
                         }
 
                         if stage == .verifyCode {
-                            Button("Resend code") {
+                            Button {
                                 resendVerification()
+                            } label: {
+                                HStack(spacing: 8) {
+                                    if sendingVerification {
+                                        ProgressView().tint(.white)
+                                    }
+                                    Image(systemName: "arrow.triangle.2.circlepath")
+                                    Text(sendingVerification ? "Sending code..." : "Resend verification code")
+                                }
+                                .font(.subheadline.weight(.semibold))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                                .padding(.horizontal, 16)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                        .fill(Palette.cardAlt.opacity(0.95))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                                .stroke(Palette.accent.opacity(0.6), lineWidth: 1)
+                                        )
+                                )
                             }
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(Palette.secondary)
+                            .foregroundStyle(.white)
+                            .buttonStyle(PressableButtonStyle())
+                            .disabled(sendingVerification)
                         }
 
                         if stage == .credentials && mode == .login {
@@ -163,6 +186,8 @@ struct AuthView: View {
                                 stage = .credentials
                                 status = nil
                                 error = nil
+                                pendingAuth = nil
+                                verificationCode = ""
                                 mode = .login
                             }
                             .font(.footnote.weight(.semibold))
@@ -192,12 +217,14 @@ struct AuthView: View {
         .onAppear {
             didAppear = true
         }
-        .onChange(of: mode) { _, _ in
-            stage = .credentials
-            status = nil
-            error = nil
-        }
+    .onChange(of: mode) { _, _ in
+        stage = .credentials
+        status = nil
+        error = nil
+        pendingAuth = nil
+        verificationCode = ""
     }
+}
 
     private var canSubmit: Bool {
         switch stage {
@@ -242,11 +269,12 @@ struct AuthView: View {
     }
 
     private func submitCredentials() async {
+        var shouldClearPassword = mode == .login
         defer {
             Task {
                 await MainActor.run {
                     loading = false
-                    if mode == .login {
+                    if shouldClearPassword {
                         password = ""
                     }
                 }
@@ -260,18 +288,14 @@ struct AuthView: View {
                     }
                     return
                 }
-            }
-            var payload: [String: String] = [
-                "email": email.trimmingCharacters(in: .whitespacesAndNewlines),
-                "password": password
-            ]
-            if mode == .signup {
+                var payload: [String: String] = [
+                    "email": email.trimmingCharacters(in: .whitespacesAndNewlines),
+                    "password": password
+                ]
                 payload["firstName"] = firstName.trimmingCharacters(in: .whitespacesAndNewlines)
                 payload["lastName"] = lastName.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
 
-            let auth = try await APIClient.shared.authenticate(mode: mode, payload: payload)
-            if mode == .signup {
+                _ = try await APIClient.shared.authenticate(mode: .signup, payload: payload)
                 await MainActor.run {
                     stage = .verifyCode
                     status = "Check your email for the verification code."
@@ -280,42 +304,57 @@ struct AuthView: View {
                 return
             }
 
-            let resolvedSequence: String
-            if let seq = auth.user.sequenceId, !seq.isEmpty {
-                resolvedSequence = seq
-            } else {
-                resolvedSequence = SequenceGenerator.next()
-            }
-            let profile = UserProfile(
-                id: auth.user.id,
-                sequenceId: resolvedSequence,
-                firstName: auth.user.firstName,
-                lastName: auth.user.lastName,
-                email: auth.user.email,
-                balance: auth.user.balance,
-                monthlySpend: auth.user.monthlySpend,
-                lastActive: auth.user.lastActive
-            )
-            await MainActor.run {
-                session.setSession(user: profile, token: auth.token)
-            }
-        } catch {
-            if let apiError = error as? APIError, case let .requestFailed(message) = apiError,
-               message.localizedCaseInsensitiveContains("Email not verified") {
-                await MainActor.run {
-                    stage = .verifyCode
-                    status = "Verify your email to finish login."
-                    verificationCode = ""
-                }
-                resendVerification()
-            } else {
-                await MainActor.run {
-                    if mode == .login {
-                        self.error = "Incorrect password"
-                    } else {
-                        self.error = "Request failed. Please try again."
+            let cleanEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+            log("Login attempt for \(maskedEmail(cleanEmail))")
+            let auth: AuthResponse
+            do {
+                auth = try await APIClient.shared.authenticate(mode: .login, payload: [
+                    "email": cleanEmail,
+                    "password": password
+                ])
+                log("Login credential check succeeded for \(maskedEmail(cleanEmail))")
+            } catch {
+                log("Login credential check failed for \(maskedEmail(cleanEmail)): \(error)")
+                if let apiError = error as? APIError, case let .requestFailed(message) = apiError,
+                   message.localizedCaseInsensitiveContains("Email not verified") {
+                    shouldClearPassword = false
+                    await MainActor.run {
+                        stage = .verifyCode
+                        status = "Verify your email to finish login."
+                        verificationCode = ""
+                    }
+                    log("Email not verified for \(maskedEmail(cleanEmail)); requesting verification code")
+                    resendVerification()
+                } else {
+                    await MainActor.run {
+                        self.error = "Incorrect email or password."
                     }
                 }
+                return
+            }
+
+            do {
+                try await APIClient.shared.requestVerification(email: cleanEmail.lowercased())
+                log("Verification code requested for \(maskedEmail(cleanEmail))")
+            } catch {
+                log("Verification code request failed for \(maskedEmail(cleanEmail)): \(error)")
+                await MainActor.run {
+                    self.error = "Could not send verification code."
+                }
+                return
+            }
+
+            await MainActor.run {
+                pendingAuth = auth
+                stage = .verifyCode
+                status = "Enter the code to finish login."
+                verificationCode = ""
+            }
+            
+            preloadUserData(userId: auth.user.id, token: auth.token)
+        } catch {
+            await MainActor.run {
+                self.error = "Request failed. Please try again."
             }
         }
     }
@@ -326,12 +365,21 @@ struct AuthView: View {
         }
         do {
             let cleanEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            log("Confirming verification code for \(maskedEmail(cleanEmail)) (length: \(verificationCode.count))")
             try await APIClient.shared.confirmVerification(email: cleanEmail, code: verificationCode)
+            log("Verification code confirmed for \(maskedEmail(cleanEmail))")
 
-            let auth = try await APIClient.shared.authenticate(mode: .login, payload: [
-                "email": cleanEmail,
-                "password": password
-            ])
+            let auth: AuthResponse
+            if let pending = pendingAuth {
+                log("Using pending auth response for \(maskedEmail(cleanEmail))")
+                auth = pending
+            } else {
+                log("No pending auth response; re-authenticating for \(maskedEmail(cleanEmail))")
+                auth = try await APIClient.shared.authenticate(mode: .login, payload: [
+                    "email": cleanEmail,
+                    "password": password
+                ])
+            }
             let resolvedSequence: String
             if let seq = auth.user.sequenceId, !seq.isEmpty {
                 resolvedSequence = seq
@@ -350,9 +398,22 @@ struct AuthView: View {
             )
             await MainActor.run {
                 session.setSession(user: profile, token: auth.token)
+                pendingAuth = nil
             }
+            log("Login completed for \(maskedEmail(cleanEmail))")
         } catch {
+            log("Verification flow failed: \(error)")
             await MainActor.run {
+                if let apiError = error as? APIError, case let .requestFailed(message) = apiError {
+                    let lowercased = message.lowercased()
+                    if lowercased.contains("authentication failed") ||
+                        lowercased.contains("invalid credentials") ||
+                        lowercased.contains("incorrect") ||
+                        lowercased.contains("unauthorized") {
+                        self.error = "Incorrect password."
+                        return
+                    }
+                }
                 self.error = "Verification failed. Check the code and try again."
             }
         }
@@ -364,13 +425,16 @@ struct AuthView: View {
         }
         do {
             let cleanEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            log("Password reset requested for \(maskedEmail(cleanEmail))")
             try await APIClient.shared.requestPasswordReset(email: cleanEmail)
             await MainActor.run {
                 status = "Reset email sent. Check your inbox."
                 stage = .credentials
                 mode = .login
             }
+            log("Password reset email sent for \(maskedEmail(cleanEmail))")
         } catch {
+            log("Password reset request failed: \(error)")
             await MainActor.run {
                 self.error = "Could not send reset email. Try again."
             }
@@ -378,18 +442,107 @@ struct AuthView: View {
     }
 
     private func resendVerification() {
+        let cleanEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !cleanEmail.isEmpty else {
+            error = "Enter your email to receive a verification code."
+            return
+        }
+        log("Resend verification code requested for \(maskedEmail(cleanEmail))")
+        sendingVerification = true
+        error = nil
+        status = nil
         Task {
-            let cleanEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             do {
                 try await APIClient.shared.requestVerification(email: cleanEmail)
                 await MainActor.run {
                     status = "Verification code sent."
                 }
+                log("Verification code sent for \(maskedEmail(cleanEmail))")
             } catch {
+                log("Resend verification failed for \(maskedEmail(cleanEmail)): \(error)")
                 await MainActor.run {
-                    self.error = "Could not resend code."
+                    self.error = "Could not send verification code."
                 }
             }
+            await MainActor.run {
+                sendingVerification = false
+            }
+        }
+    }
+
+    private func maskedEmail(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let atIndex = trimmed.firstIndex(of: "@") else { return trimmed }
+        let name = trimmed[..<atIndex]
+        let domain = trimmed[atIndex...]
+        if name.count <= 2 {
+            return "***" + domain
+        }
+        return name.prefix(2) + "..." + domain
+    }
+
+    private func log(_ message: String) {
+        print("[Auth] \(message)")
+    }
+    
+    private func preloadUserData(userId: String, token: String) {
+        Task {
+            log("🔄 Preloading user data for \(userId)")
+            
+            async let cardsTask = APIClient.shared.fetchCards(userId: userId, token: token)
+            async let transactionsTask = APIClient.shared.fetchTransactions(userId: userId, token: token)
+            async let categoriesTask = APIClient.shared.fetchCategories(userId: userId, token: token)
+            async let savingsTask = APIClient.shared.fetchSavingsGoal(userId: userId, token: token)
+            async let ticketsTask = APIClient.shared.fetchTickets(userId: userId, token: token)
+            
+            if let cards = try? await cardsTask {
+                await MainActor.run {
+                    SecureStore.save(cards, key: "cards")
+                    log("✅ Preloaded \(cards.count) cards")
+                }
+            }
+            
+            if let transactions = try? await transactionsTask {
+                await MainActor.run {
+                    SecureStore.save(transactions, key: "transactions")
+                    log("✅ Preloaded \(transactions.count) transactions")
+                }
+            }
+            
+            if let categories = try? await categoriesTask {
+                await MainActor.run {
+                    SecureStore.save(categories, key: "categories")
+                    log("✅ Preloaded \(categories.count) categories")
+                }
+            }
+            
+            if let savings = try? await savingsTask {
+                await MainActor.run {
+                    if savings.goalAmount > 0 {
+                        UserDefaults.standard.set(true, forKey: "showSavingsCard")
+                    }
+                    UserDefaults.standard.set(savings.goalAmount, forKey: "savingsGoalAmount")
+                    UserDefaults.standard.set(savings.goalPeriod.rawValue, forKey: "savingsGoalPeriod")
+                    log("✅ Preloaded savings goal")
+                }
+            }
+            
+            if let tickets = try? await ticketsTask {
+                await MainActor.run {
+                    SecureStore.save(tickets, key: "supportTickets")
+                    log("✅ Preloaded \(tickets.count) tickets")
+                }
+            }
+            
+            async let chatHistoryTask = APIClient.shared.fetchChatHistory(userId: userId, token: token)
+            if let chatMessages = try? await chatHistoryTask {
+                await MainActor.run {
+                    SecureStore.save(chatMessages, key: "currentChat")
+                    log("✅ Preloaded \(chatMessages.count) chat messages")
+                }
+            }
+            
+            log("✅ Data preloading completed")
         }
     }
 
@@ -541,7 +694,7 @@ private struct ModeSegment: View {
                                     )
                                 )
                                 .matchedGeometryEffect(id: "authModePill", in: selectionNamespace)
-                                .shadow(color: Palette.accent.opacity(0.28), radius: 12, x: 0, y: 8)
+                                .shadow(color: Palette.accent.opacity(0.18), radius: 8, x: 0, y: 5)
                         }
 
                         Text(option == .signup ? "Sign Up" : "Login")

@@ -20,7 +20,7 @@ struct CubertoDashboardLayout: View {
     var onAddCard: () -> Void
     var onOpenCards: () -> Void
 
-    private let currencyCode = Locale.current.currency?.identifier ?? "USD"
+    private let currencyCode = "EUR"
     @AppStorage("showSavingsCard") private var showSavingsCard = false
     @AppStorage("savingsGoalAmount") private var savingsGoalAmount: Double = 0
     @AppStorage("savingsSavedAmount") private var savingsSavedAmount: Double = 0
@@ -33,7 +33,7 @@ struct CubertoDashboardLayout: View {
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            VStack(spacing: 16) {
+            LazyVStack(spacing: 16) {
                 CubertoHeader(firstName: firstName, periodTitle: selectedPeriod.title, onAdd: onAddTransaction)
 
                 SummaryCardPager(
@@ -99,7 +99,7 @@ struct CubertoDashboardLayout: View {
                 .padding(.top, 10)
 
                 RecentTransactionsCard(
-                    transactions: Array(transactions.prefix(6)),
+                    transactions: Array(transactions.prefix(5)),
                     onViewAll: onViewAllTransactions,
                     onAdd: onAddTransaction
                 )
@@ -150,6 +150,9 @@ struct CubertoDashboardLayout: View {
                     suppressSavingsSync = true
                     savingsGoalAmount = goalAmount
                     savingsGoalPeriodRaw = goalPeriodRaw
+                    if goalAmount > 0 {
+                        showSavingsCard = true
+                    }
                     suppressSavingsSync = false
                     updateSavedAmountCacheSync()
                     savingsSavedAmount = cachedSavedAmount
@@ -215,10 +218,21 @@ struct CubertoDashboardLayout: View {
         cachedSavedTransactionCount = transactions.count
     }
 
+    @State private var cachedAverageSpent: String = ""
+    @State private var cachedAverageSpentPeriod: Period?
+    
     private var averageSpentText: String {
+        if cachedAverageSpentPeriod == selectedPeriod && !cachedAverageSpent.isEmpty {
+            return cachedAverageSpent
+        }
         let days = max(1, selectedPeriodDays(selectedPeriod))
         let avg = expenses / Double(days)
-        return avg.formatted(.currency(code: currencyCode))
+        let formatted = avg.formatted(.currency(code: currencyCode))
+        Task { @MainActor in
+            cachedAverageSpent = formatted
+            cachedAverageSpentPeriod = selectedPeriod
+        }
+        return formatted
     }
 
     private func selectedPeriodDays(_ period: Period) -> Int {
@@ -235,11 +249,19 @@ struct CubertoDashboardLayout: View {
     }
 
     private func savedAmount(for period: SpendingLimitPeriod, now: Date) -> Double {
-        let start = periodStart(for: period, now: now)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        
+        let start = periodStart(for: period, now: now, calendar: calendar)
         var incomeSum: Double = 0
         var expenseSum: Double = 0
         
-        for tx in transactions where tx.date >= start {
+        for tx in transactions {
+            let txDateStart = calendar.startOfDay(for: tx.date)
+            let normalizedStart = calendar.startOfDay(for: start)
+            
+            guard txDateStart >= normalizedStart else { continue }
+            
             if tx.kind == .income {
                 incomeSum += abs(tx.amount)
             } else {
@@ -249,15 +271,15 @@ struct CubertoDashboardLayout: View {
         return max(incomeSum - expenseSum, 0)
     }
 
-    private func periodStart(for period: SpendingLimitPeriod, now: Date) -> Date {
-        let calendar = Calendar.current
+    private func periodStart(for period: SpendingLimitPeriod, now: Date, calendar: Calendar) -> Date {
+        let nowStartOfDay = calendar.startOfDay(for: now)
         switch period {
         case .daily:
-            return calendar.startOfDay(for: now)
+            return nowStartOfDay
         case .weekly:
-            return calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? calendar.startOfDay(for: now)
+            return calendar.dateInterval(of: .weekOfYear, for: nowStartOfDay)?.start ?? nowStartOfDay
         case .monthly:
-            return calendar.dateInterval(of: .month, for: now)?.start ?? calendar.startOfDay(for: now)
+            return calendar.dateInterval(of: .month, for: nowStartOfDay)?.start ?? nowStartOfDay
         }
     }
 }
@@ -424,7 +446,6 @@ private struct SummaryCardPager: View {
                         )
                         .frame(width: cardWidth)
                         .id(0)
-                        .drawingGroup()
                         .transition(.asymmetric(
                             insertion: .move(edge: .trailing).combined(with: .opacity),
                             removal: .move(edge: .leading).combined(with: .opacity)
@@ -448,7 +469,6 @@ private struct SummaryCardPager: View {
                         }
                         .frame(width: cardWidth)
                         .id(1)
-                        .drawingGroup()
                         .transition(.asymmetric(
                             insertion: .move(edge: .trailing).combined(with: .opacity),
                             removal: .move(edge: .leading).combined(with: .opacity)
@@ -583,7 +603,7 @@ private struct SavingsSummaryCard: View {
     var onRemove: () -> Void
 
     var body: some View {
-        let currencyCode = Locale.current.currency?.identifier ?? "USD"
+        let currencyCode = "EUR"
         let remaining = max(goalAmount - savedAmount, 0)
 
         HStack(spacing: 14) {
@@ -742,7 +762,7 @@ private struct SavingsCard: View {
     var onEditGoal: () -> Void
     var onRemove: () -> Void
 
-    private let currencyCode = Locale.current.currency?.identifier ?? "USD"
+    private let currencyCode = "EUR"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -853,7 +873,7 @@ private struct SavingsGoalSheet: View {
     @State private var amountText: String = ""
 
     var body: some View {
-        let currencyCode = Locale.current.currency?.identifier ?? "USD"
+        let currencyCode = "EUR"
         let progress = goalAmount > 0 ? min(max(currentSaved / goalAmount, 0), 1) : 0
         let remaining = max(goalAmount - currentSaved, 0)
         let period = SpendingLimitPeriod(rawValue: goalPeriodRaw) ?? .monthly
@@ -1006,9 +1026,9 @@ private struct RecentTransactionsCard: View {
     var transactions: [Transaction]
     var onViewAll: () -> Void
     var onAdd: () -> Void
-    private let currencyCode = Locale.current.currency?.identifier ?? "USD"
+    private let currencyCode = "EUR"
 
-    private let dateFormatter: DateFormatter = {
+    private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         return formatter
@@ -1039,15 +1059,16 @@ private struct RecentTransactionsCard: View {
                     message: "Tap + to add your first one."
                 )
             } else {
+                let lastId = transactions.last?.id
                 LazyVStack(spacing: 0) {
                     ForEach(transactions) { tx in
                         TransactionRow(
                             title: tx.category,
-                            subtitle: dateFormatter.string(from: tx.date),
+                            subtitle: Self.dateFormatter.string(from: tx.date),
                             amountText: formattedAmount(for: tx),
                             tint: tx.kind == .income ? Palette.success : Palette.danger
                         )
-                        if tx.id != transactions.last?.id {
+                        if tx.id != lastId {
                             Divider().background(Palette.stroke)
                         }
                     }
@@ -1055,7 +1076,7 @@ private struct RecentTransactionsCard: View {
             }
         }
         .padding(14)
-        .glassCard(cornerRadius: 20, tint: [Palette.danger, Palette.accentAlt], shadowColor: Palette.danger)
+        .glassCard(cornerRadius: 20, tint: [Palette.danger, Palette.accentAlt], shadowColor: Palette.danger, useMaterial: false)
     }
 
     private func formattedAmount(for tx: Transaction) -> String {
@@ -1073,13 +1094,14 @@ private struct TransactionRow: View {
 
     var body: some View {
         let categoryColor = CategoryColors.color(for: title)
+        let icon = iconName(for: title)
 
         HStack(spacing: 12) {
             Circle()
                 .fill(categoryColor.opacity(0.18))
                 .frame(width: 36, height: 36)
                 .overlay(
-                    Image(systemName: iconName(for: title))
+                    Image(systemName: icon)
                         .font(.system(size: 14, weight: .bold))
                         .foregroundColor(categoryColor)
                 )
@@ -1119,7 +1141,7 @@ private struct WalletCardPager: View {
     var overLimitCardIds: Set<UUID> = []
     var onAddCard: () -> Void
     var onOpenCards: () -> Void
-    private let currencyCode = Locale.current.currency?.identifier ?? "USD"
+    private let currencyCode = "EUR"
     @State private var scrollId: Int?
     @State private var cachedSeries: [UUID: [Double]] = [:]
 
@@ -1164,6 +1186,7 @@ private struct WalletCardPager: View {
                     }
                     .onChange(of: transactions.count) { _, _ in
                         Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 100_000_000)
                             updateCachedSeries()
                         }
                     }
@@ -1330,22 +1353,14 @@ private struct WalletCard: View {
                 .overlay(
                     Group {
                         if isOverLimit {
-                            ZStack {
-                                RadialGradient(
-                                    colors: [Color.red.opacity(0.55), .clear],
-                                    center: .topLeading,
-                                    startRadius: 0,
-                                    endRadius: 220
-                                )
-                                RadialGradient(
-                                    colors: [Color.red.opacity(0.48), .clear],
-                                    center: .bottomTrailing,
-                                    startRadius: 0,
-                                    endRadius: 220
-                                )
-                            }
+                            RadialGradient(
+                                colors: [Color.red.opacity(0.40), .clear],
+                                center: .center,
+                                startRadius: 0,
+                                endRadius: 180
+                            )
                             .blendMode(.screen)
-                            .blur(radius: 8)
+                            .blur(radius: 4)
                             .clipShape(shape)
                             .allowsHitTesting(false)
                         }
@@ -1357,7 +1372,7 @@ private struct WalletCard: View {
                         lineWidth: 1.1
                     )
                 )
-                .shadow(color: glowColor.opacity(isOverLimit ? 0.58 : 0.28), radius: isOverLimit ? 34 : 28, y: 18)
+                .shadow(color: glowColor.opacity(isOverLimit ? 0.35 : 0.18), radius: isOverLimit ? 20 : 16, y: 12)
 
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
@@ -1415,7 +1430,6 @@ private struct LineSpark: View {
                         addSmoothLine(into: &path, points: points)
                     }
                     .stroke(Color.white, style: StrokeStyle(lineWidth: 2.6, lineCap: .round, lineJoin: .round))
-                    .drawingGroup()
 
                     Path { path in
                         guard let first = points.first, let last = points.last else { return }
@@ -1425,14 +1439,7 @@ private struct LineSpark: View {
                         path.addLine(to: CGPoint(x: last.x, y: proxy.size.height))
                         path.closeSubpath()
                     }
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.white.opacity(0.26), Color.white.opacity(0.04), .clear],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .drawingGroup()
+                    .fill(Color.white.opacity(0.15))
                 }
             }
         }

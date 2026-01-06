@@ -36,7 +36,7 @@ final class SessionManager: ObservableObject {
     private var sessionCreatedAt: Date?
     private let sessionDuration: TimeInterval = 60 * 60 * 24 * 60 
 
-    var isAuthenticated: Bool { user != nil && token != nil && sessionValidated }
+    var isAuthenticated: Bool { user != nil && token != nil }
 
     init() {
         user = nil
@@ -57,9 +57,20 @@ final class SessionManager: ObservableObject {
             }
         }
         
-        guard user != nil, token != nil else { return }
-
-        sessionValidated = true
+        guard let token = token else { return }
+        
+        do {
+            _ = try await APIClient.shared.validateSession(token: token)
+            sessionValidated = true
+        } catch {
+            if let apiError = error as? APIError,
+               case .requestFailed(let message) = apiError,
+               (message.contains("401") || message.contains("Unauthorized") || message.contains("invalid session")) {
+                logout()
+            } else {
+                sessionValidated = true
+            }
+        }
     }
     
     private func restoreSessionFromStorage() {
@@ -72,9 +83,10 @@ final class SessionManager: ObservableObject {
                 self.user = storedUser
                 self.token = storedToken
                 self.sessionCreatedAt = storedDate
-                self.sessionValidated = true
+                self.sessionValidated = false
                 self.restoredFromStorage = true
             } else {
+                print("⚠️ Session expired (stored: \(storedDate), now: \(now))")
                 SecureStore.delete(keys: ["userProfile", "authToken", "sessionCreatedAt"])
             }
         }
@@ -101,7 +113,7 @@ final class SessionManager: ObservableObject {
         token = nil
         sessionCreatedAt = nil
         sessionValidated = false
-        SecureStore.delete(keys: ["userProfile", "authToken", "sessionCreatedAt", "cards", "transactions"])
+        SecureStore.delete(keys: ["userProfile", "authToken", "sessionCreatedAt", "cards", "transactions", "chatHistories", "currentChat"])
         UserDefaults.standard.removeObject(forKey: "sequenceCounter")
         restoredFromStorage = false
         isUnlocked = false
