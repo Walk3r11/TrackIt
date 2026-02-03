@@ -44,102 +44,85 @@ struct AuthView: View {
 
     var body: some View {
         ZStack {
-            AnimatedBackground()
-                .allowsHitTesting(false)
+            MinimalBackground()
+                .ignoresSafeArea()
 
             ScrollView(showsIndicators: false) {
-                VStack(spacing: 18) {
-                    HeaderBadge(mode: mode)
-                        .padding(.top, 34)
+                VStack(alignment: .leading, spacing: 20) {
+                    HStack {
+                        BrandMark()
+                        Spacer()
+                        CapsuleTag(text: mode == .login ? "Login" : "Sign up")
+                    }
+                    .padding(.top, 12)
 
-                    VStack(spacing: 8) {
-                        Text("TrackIt Access")
-                            .font(.system(size: 32, weight: .bold, design: .rounded))
-                            .foregroundStyle(Palette.primary)
-                        Text(mode == .login ? "Secure login for admins and support" : "Create your admin seat")
-                            .foregroundStyle(Palette.secondary)
-                            .font(.callout)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(headerTitle)
+                            .font(.custom("Avenir Next", size: 32))
+                            .fontWeight(.semibold)
+                            .foregroundStyle(Color.black)
+                        Text(headerSubtitle)
+                            .font(.custom("Avenir Next", size: 16))
+                            .foregroundStyle(Color.black.opacity(0.6))
                     }
 
-                VStack(spacing: 14) {
                     if stage == .credentials {
-                        ModeSegment(mode: $mode)
+                        ModeSwitch(mode: $mode)
+                            .padding(.top, 6)
                     }
 
-                    VStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 14) {
                         switch stage {
                         case .credentials:
                             if mode == .signup {
-                                FloatingField(title: "First name", text: $firstName)
-                                    .transition(
-                                        .asymmetric(
-                                            insertion: .move(edge: .top).combined(with: .opacity),
-                                            removal: .move(edge: .bottom).combined(with: .opacity)
-                                        )
-                                    )
-                                FloatingField(title: "Last name", text: $lastName)
-                                    .transition(
-                                        .asymmetric(
-                                            insertion: .move(edge: .top).combined(with: .opacity),
-                                            removal: .move(edge: .bottom).combined(with: .opacity)
-                                        )
-                                    )
+                                MinimalField(title: "First name", text: $firstName)
+                                MinimalField(title: "Last name", text: $lastName)
                             }
-                            FloatingField(title: "Email", text: $email, keyboard: .emailAddress, autocap: .none)
-                            SecureFloatingField(title: "Password", text: $password, disableAutofill: mode == .login)
+                            MinimalField(title: "Email", text: $email, keyboard: .emailAddress, autocap: .none)
+                            MinimalSecureField(title: "Password", text: $password, disableAutofill: mode == .login)
                         case .verifyCode:
                             Text("Enter the 6-digit code sent to \(email).")
-                                .font(.footnote)
-                                .foregroundStyle(Palette.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            FloatingField(title: "Verification code", text: $verificationCode, keyboard: .numberPad, autocap: .none)
+                                .font(.custom("Avenir Next", size: 14))
+                                .foregroundStyle(Color.black.opacity(0.6))
+                            MinimalField(title: "Verification code", text: $verificationCode, keyboard: .numberPad, autocap: .none)
                         case .resetRequest:
                             Text("We will email you a password reset link.")
-                                .font(.footnote)
-                                .foregroundStyle(Palette.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            FloatingField(title: "Email", text: $email, keyboard: .emailAddress, autocap: .none)
+                                .font(.custom("Avenir Next", size: 14))
+                                .foregroundStyle(Color.black.opacity(0.6))
+                            MinimalField(title: "Email", text: $email, keyboard: .emailAddress, autocap: .none)
                         }
                     }
-                    .animation(.spring(response: 0.45, dampingFraction: 0.85), value: stage)
+                    .animation(.easeInOut(duration: 0.2), value: stage)
 
-                    VStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 12) {
                         Button(action: submit) {
                             HStack(spacing: 10) {
                                 if loading { ProgressView().tint(.white) }
                                 Text(primaryActionTitle)
+                                    .font(.custom("Avenir Next", size: 16))
                                     .fontWeight(.semibold)
                             }
                             .frame(maxWidth: .infinity)
-                            .padding()
+                            .padding(.vertical, 16)
                             .background(
-                                LinearGradient(
-                                    colors: [Palette.accentAlt, Palette.accent],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ),
-                                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .fill(Color.black)
                             )
                             .foregroundStyle(.white)
-                            .shadow(color: Palette.accent.opacity(0.22), radius: 14, x: 0, y: 8)
                         }
                         .buttonStyle(PressableButtonStyle())
                         .disabled(loading || sendingVerification || !canSubmit)
 
                         if let status {
                             Text(status)
-                                .font(.footnote)
-                                .foregroundStyle(Palette.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .transition(.opacity.combined(with: .move(edge: .top)))
+                                .font(.custom("Avenir Next", size: 13))
+                                .foregroundStyle(Color.black.opacity(0.6))
                         }
 
                         if let error {
                             Text(error)
-                                .font(.footnote)
-                                .foregroundStyle(Palette.danger)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .transition(.opacity.combined(with: .move(edge: .top)))
+                                .font(.custom("Avenir Next", size: 13))
+                                .foregroundStyle(Color.red.opacity(0.85))
                         }
 
                         if stage == .verifyCode {
@@ -148,25 +131,20 @@ struct AuthView: View {
                             } label: {
                                 HStack(spacing: 8) {
                                     if sendingVerification {
-                                        ProgressView().tint(.white)
+                                        ProgressView().tint(.black)
                                     }
-                                    Image(systemName: "arrow.triangle.2.circlepath")
                                     Text(sendingVerification ? "Sending code..." : "Resend verification code")
                                 }
-                                .font(.subheadline.weight(.semibold))
+                                .font(.custom("Avenir Next", size: 14))
+                                .fontWeight(.semibold)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 14)
-                                .padding(.horizontal, 16)
                                 .background(
-                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                        .fill(Palette.cardAlt.opacity(0.95))
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                                .stroke(Palette.accent.opacity(0.6), lineWidth: 1)
-                                        )
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .stroke(Color.black.opacity(0.2), lineWidth: 1)
                                 )
                             }
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Color.black)
                             .buttonStyle(PressableButtonStyle())
                             .disabled(sendingVerification)
                         }
@@ -177,8 +155,9 @@ struct AuthView: View {
                                 status = nil
                                 error = nil
                             }
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(Palette.secondary)
+                            .font(.custom("Avenir Next", size: 14))
+                            .fontWeight(.semibold)
+                            .foregroundStyle(Color.black.opacity(0.65))
                         }
 
                         if stage != .credentials {
@@ -190,41 +169,61 @@ struct AuthView: View {
                                 verificationCode = ""
                                 mode = .login
                             }
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(Palette.secondary)
+                            .font(.custom("Avenir Next", size: 14))
+                            .fontWeight(.semibold)
+                            .foregroundStyle(Color.black.opacity(0.65))
                         }
                     }
-                    .animation(.spring(response: 0.35, dampingFraction: 0.85), value: error)
-                }
-                .padding(16)
-                .glassCard(
-                    cornerRadius: 22,
-                    tint: mode == .login ? [Palette.accentAlt, Palette.accent] : [Palette.accent, Palette.accentAlt],
-                    shadowColor: Palette.accent
-                )
+                    .padding(.top, 4)
 
-                Spacer(minLength: 28)
+                    Text("By continuing you agree to our Terms and Privacy Policy.")
+                        .font(.custom("Avenir Next", size: 12))
+                        .foregroundStyle(Color.black.opacity(0.5))
+                        .padding(.top, 8)
+
+                    Spacer(minLength: 24)
                 }
-                .frame(maxWidth: LayoutMetrics.maxContentWidth)
+                .padding(24)
+                .frame(maxWidth: 520, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.horizontal, LayoutMetrics.horizontalPadding)
-                .padding(.bottom, 24)
+                .opacity(didAppear ? 1 : 0)
+                .offset(y: didAppear ? 0 : 10)
+                .animation(.easeOut(duration: 0.3), value: didAppear)
             }
-            .opacity(didAppear ? 1 : 0)
-            .offset(y: didAppear ? 0 : 12)
-            .animation(.spring(response: 0.55, dampingFraction: 0.9), value: didAppear)
         }
         .onAppear {
             didAppear = true
         }
-    .onChange(of: mode) { _, _ in
-        stage = .credentials
-        status = nil
-        error = nil
-        pendingAuth = nil
-        verificationCode = ""
+        .onChange(of: mode) { _, _ in
+            stage = .credentials
+            status = nil
+            error = nil
+            pendingAuth = nil
+            verificationCode = ""
+        }
     }
-}
+
+    private var headerTitle: String {
+        switch stage {
+        case .credentials:
+            return mode == .login ? "Welcome back" : "Create your space"
+        case .verifyCode:
+            return "Verify your email"
+        case .resetRequest:
+            return "Reset your password"
+        }
+    }
+
+    private var headerSubtitle: String {
+        switch stage {
+        case .credentials:
+            return mode == .login ? "Sign in to keep your money in focus." : "A quiet workspace for modern finance."
+        case .verifyCode:
+            return "One last step before you get in."
+        case .resetRequest:
+            return "We will send you a secure reset link."
+        }
+    }
 
     private var canSubmit: Bool {
         switch stage {
@@ -350,7 +349,7 @@ struct AuthView: View {
                 status = "Enter the code to finish login."
                 verificationCode = ""
             }
-            
+
             preloadUserData(userId: auth.user.id, token: auth.token)
         } catch {
             await MainActor.run {
@@ -484,38 +483,38 @@ struct AuthView: View {
     private func log(_ message: String) {
         print("[Auth] \(message)")
     }
-    
+
     private func preloadUserData(userId: String, token: String) {
         Task {
-            log("🔄 Preloading user data for \(userId)")
-            
+            log("Preloading user data for \(userId)")
+
             async let cardsTask = APIClient.shared.fetchCards(userId: userId, token: token)
             async let transactionsTask = APIClient.shared.fetchTransactions(userId: userId, token: token)
             async let categoriesTask = APIClient.shared.fetchCategories(userId: userId, token: token)
             async let savingsTask = APIClient.shared.fetchSavingsGoal(userId: userId, token: token)
             async let ticketsTask = APIClient.shared.fetchTickets(userId: userId, token: token)
-            
+
             if let cards = try? await cardsTask {
                 await MainActor.run {
                     SecureStore.save(cards, key: "cards")
-                    log("✅ Preloaded \(cards.count) cards")
+                    log("Preloaded \(cards.count) cards")
                 }
             }
-            
+
             if let transactions = try? await transactionsTask {
                 await MainActor.run {
                     SecureStore.save(transactions, key: "transactions")
-                    log("✅ Preloaded \(transactions.count) transactions")
+                    log("Preloaded \(transactions.count) transactions")
                 }
             }
-            
+
             if let categories = try? await categoriesTask {
                 await MainActor.run {
                     SecureStore.save(categories, key: "categories")
-                    log("✅ Preloaded \(categories.count) categories")
+                    log("Preloaded \(categories.count) categories")
                 }
             }
-            
+
             if let savings = try? await savingsTask {
                 await MainActor.run {
                     if savings.goalAmount > 0 {
@@ -523,26 +522,26 @@ struct AuthView: View {
                     }
                     UserDefaults.standard.set(savings.goalAmount, forKey: "savingsGoalAmount")
                     UserDefaults.standard.set(savings.goalPeriod.rawValue, forKey: "savingsGoalPeriod")
-                    log("✅ Preloaded savings goal")
+                    log("Preloaded savings goal")
                 }
             }
-            
+
             if let tickets = try? await ticketsTask {
                 await MainActor.run {
                     SecureStore.save(tickets, key: "supportTickets")
-                    log("✅ Preloaded \(tickets.count) tickets")
+                    log("Preloaded \(tickets.count) tickets")
                 }
             }
-            
+
             async let chatHistoryTask = APIClient.shared.fetchChatHistory(userId: userId, token: token)
             if let chatMessages = try? await chatHistoryTask {
                 await MainActor.run {
                     SecureStore.save(chatMessages, key: "currentChat")
-                    log("✅ Preloaded \(chatMessages.count) chat messages")
+                    log("Preloaded \(chatMessages.count) chat messages")
                 }
             }
-            
-            log("✅ Data preloading completed")
+
+            log("Data preloading completed")
         }
     }
 
@@ -553,34 +552,34 @@ struct AuthView: View {
         let special = value.range(of: "[^A-Za-z0-9]", options: .regularExpression) != nil
         return value.count >= 8 && upper && lower && number && special
     }
-    
+
     private func getPasswordValidationError(_ value: String) -> String? {
         var missing: [String] = []
-        
+
         if value.count < 8 {
             missing.append("at least 8 characters")
         }
-        
+
         if value.range(of: "[A-Z]", options: .regularExpression) == nil {
             missing.append("an uppercase letter")
         }
-        
+
         if value.range(of: "[a-z]", options: .regularExpression) == nil {
             missing.append("a lowercase letter")
         }
-        
+
         if value.range(of: "[0-9]", options: .regularExpression) == nil {
             missing.append("a number")
         }
-        
+
         if value.range(of: "[^A-Za-z0-9]", options: .regularExpression) == nil {
             missing.append("a special character")
         }
-        
+
         if missing.isEmpty {
             return nil
         }
-        
+
         if missing.count == 1 {
             return "Password must contain \(missing[0])."
         } else if missing.count == 2 {
@@ -593,7 +592,50 @@ struct AuthView: View {
     }
 }
 
-private struct FloatingField: View {
+private struct BrandMark: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(Color.black)
+                Text("T")
+                    .font(.custom("Avenir Next", size: 18))
+                    .fontWeight(.bold)
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 36, height: 36)
+
+            Text("TrackIt")
+                .font(.custom("Avenir Next", size: 18))
+                .fontWeight(.semibold)
+                .foregroundStyle(Color.black)
+        }
+    }
+}
+
+private struct CapsuleTag: View {
+    let text: String
+
+    var body: some View {
+        Text(text.uppercased())
+            .font(.custom("Avenir Next", size: 11))
+            .fontWeight(.semibold)
+            .tracking(1.2)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 12)
+            .background(
+                Capsule()
+                    .fill(Color.white.opacity(0.9))
+            )
+            .overlay(
+                Capsule()
+                    .stroke(Color.black.opacity(0.1), lineWidth: 1)
+            )
+            .foregroundStyle(Color.black.opacity(0.7))
+    }
+}
+
+private struct MinimalField: View {
     let title: String
     @Binding var text: String
     var keyboard: KeyboardType = {
@@ -614,23 +656,30 @@ private struct FloatingField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.footnote)
-                .foregroundStyle(.white.opacity(0.55))
+                .font(.custom("Avenir Next", size: 12))
+                .foregroundStyle(Color.black.opacity(0.6))
             TextField(title, text: $text)
                 .textContentType(.none)
 #if canImport(UIKit)
                 .keyboardType(keyboard)
                 .autocapitalization(autocap)
 #endif
-                .padding(.vertical, 14)
+                .padding(.vertical, 12)
                 .padding(.horizontal, 14)
-                .background(CardBackground())
-                .foregroundStyle(.white)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.white.opacity(0.95))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                )
+                .foregroundStyle(Color.black)
         }
     }
 }
 
-private struct SecureFloatingField: View {
+private struct MinimalSecureField: View {
     let title: String
     @Binding var text: String
     var disableAutofill = false
@@ -639,8 +688,8 @@ private struct SecureFloatingField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.footnote)
-                .foregroundStyle(.white.opacity(0.55))
+                .font(.custom("Avenir Next", size: 12))
+                .foregroundStyle(Color.black.opacity(0.6))
             HStack(spacing: 10) {
                 if isSecure {
                     SecureField(title, text: $text)
@@ -655,20 +704,27 @@ private struct SecureFloatingField: View {
                 }
                 Button(action: { isSecure.toggle() }) {
                     Image(systemName: isSecure ? "eye" : "eye.slash")
-                        .foregroundStyle(.white.opacity(0.7))
+                        .foregroundStyle(Color.black.opacity(0.5))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(isSecure ? "Show password" : "Hide password")
             }
-            .padding(.vertical, 14)
+            .padding(.vertical, 12)
             .padding(.horizontal, 14)
-            .background(CardBackground())
-            .foregroundStyle(.white)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.white.opacity(0.95))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.black.opacity(0.08), lineWidth: 1)
+            )
+            .foregroundStyle(Color.black)
         }
     }
 }
 
-private struct ModeSegment: View {
+private struct ModeSwitch: View {
     @Binding var mode: AuthMode
     @Namespace private var selectionNamespace
 
@@ -676,85 +732,34 @@ private struct ModeSegment: View {
         HStack(spacing: 8) {
             ForEach(AuthMode.allCases, id: \.self) { option in
                 Button {
-                    withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
                         mode = option
                     }
                 } label: {
                     ZStack {
-                        Capsule()
-                            .fill(Palette.mutedFill.opacity(mode == option ? 0.18 : 0.28))
-
                         if mode == option {
-                            Capsule()
-                                .fill(
-                                    LinearGradient(
-                                        colors: [Palette.accentAlt.opacity(0.75), Palette.accent.opacity(0.65)],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    )
-                                )
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(Color.black)
                                 .matchedGeometryEffect(id: "authModePill", in: selectionNamespace)
-                                .shadow(color: Palette.accent.opacity(0.18), radius: 8, x: 0, y: 5)
                         }
-
                         Text(option == .signup ? "Sign Up" : "Login")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(mode == option ? Color.white : Palette.secondary)
+                            .font(.custom("Avenir Next", size: 14))
+                            .fontWeight(.semibold)
+                            .foregroundStyle(mode == option ? Color.white : Color.black.opacity(0.6))
                     }
-                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .frame(maxWidth: .infinity, minHeight: 40)
                 }
                 .buttonStyle(PressableButtonStyle(scale: 0.98, pressedOpacity: 0.92))
             }
         }
-        .padding(8)
+        .padding(6)
         .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(Palette.cardAlt.opacity(0.98))
-                .overlay(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.06), .clear, Color.black.opacity(0.15)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                    .allowsHitTesting(false)
-                )
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.white.opacity(0.8))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(Color.white.opacity(0.14), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.black.opacity(0.08), lineWidth: 1)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-    }
-}
-
-private struct CardBackground: View {
-    var body: some View {
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .fill(Palette.cardAlt.opacity(0.95))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(Palette.stroke, lineWidth: 1)
-            )
-    }
-}
-
-private struct HeaderBadge: View {
-    let mode: AuthMode
-    var body: some View {
-        HStack(spacing: 10) {
-            Label(mode == .login ? "Login" : "New user", systemImage: mode == .login ? "lock.fill" : "sparkles")
-                .font(.footnote.bold())
-                .padding(.vertical, 10)
-                .padding(.horizontal, 14)
-                .background(
-                    Capsule().fill(
-                        LinearGradient(colors: [Color.white.opacity(0.2), Color.white.opacity(0.05)], startPoint: .topLeading, endPoint: .bottomTrailing)
-                    )
-                )
-                .foregroundStyle(.white)
-            Spacer()
-        }
-        .frame(maxWidth: .infinity)
     }
 }

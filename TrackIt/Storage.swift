@@ -37,7 +37,7 @@ enum SecureStore {
     static func delete(keys: [String]) {
         keys.forEach { delete(key: $0) }
     }
-    
+
     static func deleteAll() {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword

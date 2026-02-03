@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 struct TicketsTab: View {
     @Binding var tickets: [SupportTicket]
@@ -11,71 +12,117 @@ struct TicketsTab: View {
             AnimatedBackground()
                 .allowsHitTesting(false)
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack {
-                        Text("Tickets")
-                            .font(.largeTitle.bold())
-                            .foregroundColor(Palette.primary)
-                        Spacer()
-                        Button {
-                            showNewTicket = true
-                        } label: {
-                            Label("New", systemImage: "plus")
-                                .font(.subheadline.weight(.semibold))
-                                .padding(.vertical, 8)
-                                .padding(.horizontal, 12)
-                                .background(Palette.accentAlt, in: Capsule())
-                                .foregroundColor(.white)
-                        }
-                        .buttonStyle(PressableButtonStyle())
-                    }
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 18) {
+                    header
 
                     if tickets.isEmpty {
-                        EmptyStateView(title: "No tickets", message: "Create a ticket to reach support.")
-                            .glassCard(cornerRadius: 18, tint: [Palette.accentAlt, Palette.accent])
+                        emptyState
                     } else {
-                        VStack(spacing: 10) {
+                        VStack(spacing: 12) {
                             ForEach(tickets) { ticket in
                                 Button {
                                     selectedTicket = ticket
                                 } label: {
-                                    HStack {
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            Text(ticket.subject)
-                                                .font(.subheadline.weight(.semibold))
-                                                .foregroundColor(Palette.primary)
-                                            Text(ticket.detail)
-                                                .font(.caption)
-                                                .foregroundColor(Palette.secondary)
-                                                .lineLimit(2)
-                                        }
-                                        Spacer()
-                                        Text(ticket.status.rawValue.capitalized)
-                                            .font(.caption.weight(.bold))
-                                            .foregroundColor(ticket.status == .open ? Palette.accent : Palette.accentAlt)
-                                            .padding(.horizontal, 10)
-                                            .padding(.vertical, 6)
-                                            .background(Palette.mutedFill, in: Capsule())
-                                    }
-                                    .padding()
-                                    .glassCard(cornerRadius: 18, tint: [Palette.cardAlt, Palette.accentAlt])
+                                    TicketRow(ticket: ticket)
                                 }
-                                .buttonStyle(PlainButtonStyle())
+                                .buttonStyle(.plain)
                             }
                         }
                     }
                 }
-                .frame(maxWidth: LayoutMetrics.maxContentWidth)
+                .frame(maxWidth: 520, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.horizontal, LayoutMetrics.horizontalPadding)
-                .padding(.vertical, 16)
+                .padding(.horizontal, 22)
+                .padding(.vertical, 18)
             }
         }
         .sheet(item: $selectedTicket) { ticket in
             TicketChatView(ticket: ticket)
                 .environmentObject(session)
         }
+    }
+
+    private var header: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Support")
+                    .font(.appFont(size: 26, weight: .semibold))
+                    .foregroundStyle(Palette.primary)
+                Text("Your requests and conversation history")
+                    .font(.appFont(size: 13))
+                    .foregroundStyle(Palette.secondary)
+            }
+
+            Spacer()
+
+            Button {
+                showNewTicket = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "plus")
+                    Text("New")
+                        .font(.appFont(size: 13, weight: .semibold))
+                }
+                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .minimalSurface(cornerRadius: 16, fill: Palette.primary, stroke: Palette.primary)
+                .foregroundColor(.white)
+            }
+            .buttonStyle(PressableButtonStyle())
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("No tickets yet")
+                .font(.appFont(size: 16, weight: .semibold))
+            Text("Create a ticket to reach support.")
+                .font(.appFont(size: 13))
+                .foregroundStyle(Palette.secondary)
+        }
+        .padding(16)
+        .minimalSurface(cornerRadius: 18)
+    }
+}
+
+private struct TicketRow: View {
+    let ticket: SupportTicket
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(ticket.status == .open ? Palette.success.opacity(0.15) : Palette.cardAlt)
+                .frame(width: 40, height: 40)
+                .overlay(
+                    Image(systemName: "lifepreserver")
+                        .font(.appFont(size: 16, weight: .semibold))
+                        .foregroundColor(ticket.status == .open ? Palette.success : Palette.secondary)
+                )
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(ticket.subject)
+                    .font(.appFont(size: 14, weight: .semibold))
+                    .foregroundColor(Palette.primary)
+                Text(ticket.detail)
+                    .font(.appFont(size: 11))
+                    .foregroundColor(Palette.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer()
+
+            Text(ticket.status.rawValue.capitalized)
+                .font(.appFont(size: 11, weight: .semibold))
+                .foregroundColor(ticket.status == .open ? Palette.success : Palette.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule().fill(Palette.cardAlt)
+                )
+        }
+        .padding(14)
+        .minimalSurface(cornerRadius: 18)
     }
 }
 
@@ -89,51 +136,43 @@ struct TicketChatView: View {
     @State private var isSending: Bool = false
     @State private var errorMessage: String?
     @FocusState private var isInputFocused: Bool
-    
+    @State private var websocketCancellable: AnyCancellable?
+    @AppStorage("activeTicketId") private var activeTicketId = ""
+    @AppStorage("hasUnreadSupportNotification") private var hasUnreadSupportNotification = false
+    @AppStorage("lastSupportNotificationId") private var lastSupportNotificationId = ""
+    @State private var scrollToBottomToken = 0
+    @State private var liveMessagesTask: Task<Void, Never>?
+    @State private var isRefreshingMessages = false
+
     private static var persistedMessages: [String: [APIClient.TicketMessage]] = [:]
-    
+
     var body: some View {
         NavigationView {
             ZStack {
                 AnimatedBackground()
                     .allowsHitTesting(false)
-                
+
                 VStack(spacing: 0) {
                     ScrollViewReader { proxy in
                         ScrollView {
                             LazyVStack(spacing: 12) {
                                 if messages.isEmpty && !isLoading {
-                                    VStack(spacing: 16) {
-                                        Image(systemName: "message")
-                                            .font(.system(size: 48))
-                                            .foregroundColor(Palette.accent)
-                                            .opacity(0.6)
+                                    VStack(spacing: 12) {
                                         Text("No messages yet")
-                                            .font(.headline)
+                                            .font(.appFont(size: 16, weight: .semibold))
                                             .foregroundColor(Palette.primary)
                                         Text("Start the conversation")
-                                            .font(.subheadline)
+                                            .font(.appFont(size: 13))
                                             .foregroundColor(Palette.secondary)
                                     }
                                     .padding(.vertical, 40)
                                 }
-                                
-                                ForEach(messages) { message in
+
+                                ForEach(Array(messages.enumerated()), id: \.offset) { _, message in
                                     TicketChatBubble(message: message, isUser: message.senderType == "user")
                                         .id(message.id)
                                 }
-                                
-                                if isSending {
-                                    HStack {
-                                        ProgressView()
-                                            .tint(Palette.accent)
-                                        Text("Sending...")
-                                            .font(.subheadline)
-                                            .foregroundColor(Palette.secondary)
-                                    }
-                                    .padding()
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                }
+
                             }
                             .padding(.horizontal, LayoutMetrics.horizontalPadding)
                             .padding(.vertical, 12)
@@ -145,48 +184,53 @@ struct TicketChatView: View {
                                 }
                             }
                         }
+                        .onChange(of: scrollToBottomToken) { _, _ in
+                            if let lastMessage = messages.last {
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                    withAnimation {
+                                        proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                                    }
+                                }
+                            }
+                        }
                         .onTapGesture {
                             isInputFocused = false
                         }
                     }
-                    
+
                     HStack(spacing: 12) {
                         TextField("Type a message...", text: $inputText, axis: .vertical)
                             .textFieldStyle(.plain)
-                            .padding(.horizontal, 16)
+                            .padding(.horizontal, 14)
                             .padding(.vertical, 12)
-                            .background(Palette.mutedFill, in: RoundedRectangle(cornerRadius: 24))
+                            .minimalSurface(cornerRadius: 18, fill: Palette.cardAlt)
                             .foregroundColor(Palette.primary)
                             .focused($isInputFocused)
-                            .disabled(isSending)
-                            .toolbar {
-                                ToolbarItemGroup(placement: .keyboard) {
-                                    Spacer()
-                                    Button("Done") {
-                                        isInputFocused = false
-                                    }
-                                    .foregroundColor(Palette.accent)
-                                }
-                            }
-                        
+                            .toolbar { }
+
                         Button {
                             sendMessage()
                         } label: {
-                            Image(systemName: "arrow.up.circle.fill")
-                                .font(.system(size: 32))
-                                .foregroundColor(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending ? Palette.secondary.opacity(0.5) : Palette.accent)
+                            ZStack {
+                                if isSending {
+                                    ProgressView()
+                                        .tint(.white)
+                                } else {
+                                    Image(systemName: "arrow.up")
+                                        .font(.appFont(size: 14, weight: .semibold))
+                                        .foregroundColor(.white)
+                                }
+                            }
+                            .frame(width: 40, height: 40)
+                            .background(
+                                Circle().fill(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending ? Palette.secondary.opacity(0.3) : Palette.primary)
+                            )
                         }
                         .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
                     }
                     .padding(.horizontal, LayoutMetrics.horizontalPadding)
                     .padding(.vertical, 12)
-                    .background(
-                        LinearGradient(
-                            colors: [Palette.card.opacity(0.95), Palette.cardAlt.opacity(0.95)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
+                    .background(Palette.background)
                 }
             }
             .navigationTitle(ticket.subject)
@@ -198,165 +242,259 @@ struct TicketChatView: View {
             }
             .task {
                 await loadMessages()
+                setupWebSocket()
+                startLiveMessagesLoop()
+                await markReadIfNeeded()
+                await MainActor.run {
+                    scrollToBottomToken += 1
+                }
+            }
+            .onDisappear {
+                WebSocketManager.shared.disconnect()
+                websocketCancellable?.cancel()
+                websocketCancellable = nil
+                stopLiveMessagesLoop()
+                if activeTicketId == ticket.id.uuidString {
+                    activeTicketId = ""
+                }
+            }
+            .onAppear {
+                activeTicketId = ticket.id.uuidString
             }
         }
     }
-    
-    private func loadMessages() async {
-        guard let token = session.token, !token.isEmpty else {
-            errorMessage = "Authentication required"
+
+    private func setupWebSocket() {
+        guard let token = session.token, let userId = session.user?.id else {
             return
         }
-        
-        isLoading = true
-        errorMessage = nil
-        
-        if let persisted = Self.persistedMessages[ticket.id.uuidString] {
+
+        WebSocketManager.shared.disconnect()
+        websocketCancellable?.cancel()
+
+        WebSocketManager.shared.connect(
+            token: token,
+            userId: userId,
+            supportUserId: nil,
+            streamType: .ticketMessages,
+            ticketId: ticket.id.uuidString
+        )
+
+        websocketCancellable = WebSocketManager.shared.messages
+            .receive(on: DispatchQueue.main)
+            .sink(receiveCompletion: { _ in }, receiveValue: { message in
+                guard let data = message.data?["message"]?.value as? [String: Any],
+                      let newMessage = decodeTicketMessage(from: data) else {
+                    return
+                }
+
+                if !messages.contains(where: { $0.id == newMessage.id }) {
+                    messages.append(newMessage)
+                    persistMessages()
+                    if newMessage.senderType == "support" {
+                        Task { await markReadIfNeeded() }
+                    }
+                }
+            })
+    }
+
+    private func decodeTicketMessage(from data: [String: Any]) -> APIClient.TicketMessage? {
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: data),
+              let message = try? JSONDecoder().decode(APIClient.TicketMessage.self, from: jsonData) else {
+            return nil
+        }
+        return message
+    }
+
+    private func loadMessages() async {
+        if let cached = TicketChatView.persistedMessages[ticket.id.uuidString] {
             await MainActor.run {
-                messages = persisted
+                messages = cached
             }
         }
-        
+
+        guard let token = session.token else { return }
+
+        isLoading = true
+        defer { isLoading = false }
+
         do {
-            let fetchedMessages = try await APIClient.shared.fetchTicketMessages(
-                ticketId: ticket.id.uuidString,
-                token: token
-            )
+            let fetched = try await APIClient.shared.fetchTicketMessages(ticketId: ticket.id.uuidString, token: token)
             await MainActor.run {
-                messages = fetchedMessages
-                Self.persistedMessages[ticket.id.uuidString] = fetchedMessages
-                isLoading = false
+                messages = fetched
+                persistMessages()
             }
         } catch {
             await MainActor.run {
-                isLoading = false
-                errorMessage = "Failed to load messages: \(error.localizedDescription)"
+                errorMessage = error.localizedDescription
             }
         }
     }
-    
+
+    private func startLiveMessagesLoop() {
+        guard liveMessagesTask == nil else { return }
+        liveMessagesTask = Task {
+            while !Task.isCancelled {
+                await refreshMessages()
+                try? await Task.sleep(nanoseconds: AppConstants.Refresh.ticketMessagesNanoseconds)
+            }
+        }
+    }
+
+    private func stopLiveMessagesLoop() {
+        liveMessagesTask?.cancel()
+        liveMessagesTask = nil
+    }
+
+    private func refreshMessages() async {
+        guard let token = session.token else { return }
+        let shouldRefresh = await MainActor.run { () -> Bool in
+            if isRefreshingMessages { return false }
+            isRefreshingMessages = true
+            return true
+        }
+        guard shouldRefresh else { return }
+
+        do {
+            let fetched = try await APIClient.shared.fetchTicketMessages(ticketId: ticket.id.uuidString, token: token)
+            await MainActor.run {
+                if shouldReplaceMessages(with: fetched) {
+                    messages = fetched
+                    persistMessages()
+                }
+                isRefreshingMessages = false
+            }
+        } catch {
+            await MainActor.run {
+                isRefreshingMessages = false
+            }
+        }
+    }
+
+    private func shouldReplaceMessages(with fetched: [APIClient.TicketMessage]) -> Bool {
+        if fetched.count != messages.count {
+            return true
+        }
+        guard let lastFetched = fetched.last, let lastExisting = messages.last else {
+            return !fetched.isEmpty || !messages.isEmpty
+        }
+        if lastFetched.id != lastExisting.id {
+            return true
+        }
+        if lastFetched.readByUserAt != lastExisting.readByUserAt || lastFetched.readBySupportAt != lastExisting.readBySupportAt {
+            return true
+        }
+        return false
+    }
+
+    private func markReadIfNeeded() async {
+        guard let token = session.token else { return }
+        do {
+            try await APIClient.shared.markTicketMessagesRead(
+                ticketId: ticket.id.uuidString,
+                reader: "user",
+                token: token
+            )
+            await MainActor.run {
+                hasUnreadSupportNotification = false
+                lastSupportNotificationId = ""
+            }
+        } catch {
+        }
+    }
+
     private func sendMessage() {
-        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isSending, let token = session.token, !token.isEmpty else { return }
-        
-        isInputFocused = false
+        let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !isSending else { return }
+
+        guard let token = session.token else {
+            errorMessage = "Authentication required"
+            return
+        }
+
         isSending = true
-        errorMessage = nil
-        
-        let tempMessage = APIClient.TicketMessage(
-            id: UUID().uuidString,
-            ticketId: ticket.id.uuidString,
-            userId: session.user?.id,
-            senderType: "user",
-            content: text,
-            createdAt: ISO8601DateFormatter().string(from: Date())
-        )
-        messages.append(tempMessage)
         inputText = ""
-        
+
         Task {
             do {
-                let sentMessage = try await APIClient.shared.sendTicketMessage(
+                let newMessage = try await APIClient.shared.sendTicketMessage(
                     ticketId: ticket.id.uuidString,
-                    content: text,
+                    content: trimmed,
                     token: token
                 )
+
                 await MainActor.run {
-                    if let index = messages.firstIndex(where: { $0.id == tempMessage.id }) {
-                        messages[index] = sentMessage
-                    } else {
-                        messages.append(sentMessage)
-                    }
-                    Self.persistedMessages[ticket.id.uuidString] = messages
+                    messages.append(newMessage)
+                    persistMessages()
                     isSending = false
                 }
             } catch {
                 await MainActor.run {
-                    messages.removeAll { $0.id == tempMessage.id }
-                    errorMessage = "Failed to send: \(error.localizedDescription)"
+                    errorMessage = error.localizedDescription
                     isSending = false
                 }
             }
         }
+    }
+
+    private func persistMessages() {
+        TicketChatView.persistedMessages[ticket.id.uuidString] = messages
     }
 }
 
 struct TicketChatBubble: View {
     let message: APIClient.TicketMessage
     let isUser: Bool
-    
+
     var body: some View {
         HStack {
             if isUser {
-                Spacer(minLength: 60)
+                Spacer(minLength: 40)
             }
-            
-            VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
+
+            VStack(alignment: isUser ? .trailing : .leading, spacing: 6) {
                 Text(message.content)
-                    .font(.body)
+                    .font(.appFont(size: 14))
                     .foregroundColor(isUser ? .white : Palette.primary)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
-                    .background(
-                        LinearGradient(
-                            colors: isUser 
-                                ? [Palette.accentAlt, Palette.accent]
-                                : [Palette.card, Palette.cardAlt],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        in: RoundedRectangle(cornerRadius: 20)
-                    )
+                    .multilineTextAlignment(isUser ? .trailing : .leading)
+
+                Text(formattedTimestamp(message.createdAt))
+                    .font(.appFont(size: 10, weight: .medium))
+                    .foregroundColor(isUser ? Color.white.opacity(0.7) : Palette.tertiary)
+            }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(isUser ? Palette.primary : Palette.card)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 20)
-                            .stroke(isUser ? Palette.accent.opacity(0.3) : Palette.stroke, lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(Palette.stroke, lineWidth: isUser ? 0 : 1)
                     )
-                    .shadow(
-                        color: Color.black.opacity(0.08),
-                        radius: 6,
-                        y: 3
-                    )
-            }
-            
+            )
+
             if !isUser {
-                Spacer(minLength: 60)
+                Spacer(minLength: 40)
             }
         }
     }
-}
 
-struct SupportTicketSheet: View {
-    var onSubmit: (String, String) -> Void
-    @Environment(\.dismiss) private var dismiss
-    @State private var subject = ""
-    @State private var detail = ""
-
-    var body: some View {
-        NavigationView {
-            Form {
-                Section(header: Text("Subject")) {
-                    TextField("Issue title", text: $subject)
-                }
-                Section(header: Text("Details")) {
-                    TextField("Describe the issue", text: $detail, axis: .vertical)
-                        .lineLimit(3, reservesSpace: true)
-                }
-            }
-            .navigationTitle("New ticket")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Submit") {
-                        onSubmit(subject.trimmingCharacters(in: .whitespacesAndNewlines),
-                                 detail.trimmingCharacters(in: .whitespacesAndNewlines))
-                        dismiss()
-                    }
-                    .disabled(subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
+    private func formattedTimestamp(_ value: String) -> String {
+        if let date = Self.isoFormatter.date(from: value) {
+            return Self.displayFormatter.string(from: date)
         }
+        return value
     }
+
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let displayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter
+    }()
 }

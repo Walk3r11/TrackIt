@@ -34,7 +34,7 @@ final class SessionManager: ObservableObject {
     @Published var unlocking = false
     private var lastUnlockPrompt: Date?
     private var sessionCreatedAt: Date?
-    private let sessionDuration: TimeInterval = 60 * 60 * 24 * 60 
+    private let sessionDuration: TimeInterval = 60 * 60 * 24 * 60
 
     var isAuthenticated: Bool { user != nil && token != nil }
 
@@ -56,9 +56,9 @@ final class SessionManager: ObservableObject {
                 return
             }
         }
-        
+
         guard let token = token else { return }
-        
+
         do {
             _ = try await APIClient.shared.validateSession(token: token)
             sessionValidated = true
@@ -72,7 +72,7 @@ final class SessionManager: ObservableObject {
             }
         }
     }
-    
+
     private func restoreSessionFromStorage() {
         if let storedUser: UserProfile = SecureStore.load(UserProfile.self, key: "userProfile"),
            let storedToken: String = SecureStore.load(String.self, key: "authToken"),
@@ -100,7 +100,7 @@ final class SessionManager: ObservableObject {
         sessionValidated = true
         isUnlocked = false
         lastUnlockPrompt = nil
-        
+
         SecureStore.save(user, key: "userProfile")
         SecureStore.save(token, key: "authToken")
         if let createdAt = sessionCreatedAt {

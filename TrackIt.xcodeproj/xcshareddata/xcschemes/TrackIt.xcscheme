@@ -15,7 +15,7 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "9D73C5BC2EBBE01C00F69DB0"
+               BlueprintIdentifier = "9D00543A2F1A2A1A00A7BB26"
                BuildableName = "TrackIt.app"
                BlueprintName = "TrackIt"
                ReferencedContainer = "container:TrackIt.xcodeproj">
@@ -44,7 +44,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "9D73C5BC2EBBE01C00F69DB0"
+            BlueprintIdentifier = "9D00543A2F1A2A1A00A7BB26"
             BuildableName = "TrackIt.app"
             BlueprintName = "TrackIt"
             ReferencedContainer = "container:TrackIt.xcodeproj">
@@ -53,7 +53,7 @@
       <EnvironmentVariables>
          <EnvironmentVariable
             key = "API_BASE_URL"
-            value = "https://trackit-dashboard-beryl.vercel.app"
+            value = "https://backend-production-0eac.up.railway.app/"
             isEnabled = "YES">
          </EnvironmentVariable>
       </EnvironmentVariables>
@@ -68,7 +68,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "9D73C5BC2EBBE01C00F69DB0"
+            BlueprintIdentifier = "9D00543A2F1A2A1A00A7BB26"
             BuildableName = "TrackIt.app"
             BlueprintName = "TrackIt"
             ReferencedContainer = "container:TrackIt.xcodeproj">

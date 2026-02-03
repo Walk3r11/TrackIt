@@ -1,18 +1,44 @@
 import SwiftUI
 
 enum Palette {
-    static let backgroundTop = Color(red: 0.06, green: 0.07, blue: 0.18)
-    static let backgroundMid = Color(red: 0.04, green: 0.05, blue: 0.14)
-    static let backgroundBottom = Color(red: 0.02, green: 0.02, blue: 0.06)
-    static let card = Color(red: 0.06, green: 0.07, blue: 0.16)
-    static let cardAlt = Color(red: 0.04, green: 0.05, blue: 0.12)
-    static let stroke = Color.white.opacity(0.16)
-    static let primary = Color.white
-    static let secondary = Color.white.opacity(0.65)
-    static let accent = Color(red: 0.33, green: 0.46, blue: 1.0)
-    static let accentAlt = Color(red: 0.50, green: 0.55, blue: 1.0)
-    static let success = Color(red: 0.45, green: 0.92, blue: 0.62)
-    static let danger = Color(red: 1.0, green: 0.38, blue: 0.50)
-    static let warning = Color(red: 1.0, green: 0.76, blue: 0.38)
-    static let mutedFill = Color.white.opacity(0.08)
+    // MARK: - Background Colors (Paper)
+    static let background = Color(red: 0.97, green: 0.97, blue: 0.95)
+    static let backgroundTop = background
+    static let backgroundMid = background
+    static let backgroundBottom = background
+
+    // MARK: - Surfaces (Paper + Ink)
+    static let card = Color.white.opacity(0.96)
+    static let cardAlt = Color.white.opacity(0.9)
+    static let cardElevated = Color.white
+
+    // MARK: - Border & Stroke (Minimal)
+    static let stroke = Color.black.opacity(0.08)
+    static let strokeStrong = Color.black.opacity(0.14)
+    static let strokeGlow = stroke
+
+    // MARK: - Text Colors (Ink)
+    static let primary = Color.black
+    static let secondary = Color.black.opacity(0.6)
+    static let tertiary = Color.black.opacity(0.4)
+
+    // MARK: - Accent Colors (Ink)
+    static let accent = Color.black
+    static let accentAlt = Color.black.opacity(0.85)
+    static let accentGlow = accent
+
+    // MARK: - Semantic Colors (Muted)
+    static let success = Color(red: 0.16, green: 0.56, blue: 0.38)
+    static let danger = Color(red: 0.70, green: 0.24, blue: 0.22)
+    static let warning = Color(red: 0.77, green: 0.49, blue: 0.18)
+    static let info = Color(red: 0.20, green: 0.40, blue: 0.76)
+
+    // MARK: - UI Elements (Subtle)
+    static let mutedFill = Color.black.opacity(0.04)
+    static let mutedFillStrong = Color.black.opacity(0.08)
+    static let mutedGlow = Color.black.opacity(0.12)
+    static let overlay = Color.black.opacity(0.04)
+    static let shadow = Color.black.opacity(0.05)
+    static let shadowStrong = Color.black.opacity(0.1)
+    static let highlight = Color.white.opacity(0.2)
 }

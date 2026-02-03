@@ -19,7 +19,7 @@ enum APIError: LocalizedError {
     case invalidURL
     case requestFailed(String)
     case decodingFailed
-    
+
     var errorDescription: String? {
         switch self {
         case .invalidURL:
@@ -77,24 +77,24 @@ struct APIClient {
         guard let http = response as? HTTPURLResponse else {
             throw APIError.requestFailed("No HTTP response")
         }
-        
+
         guard http.statusCode == 200 else {
             let message = String(data: data, encoding: .utf8) ?? "Token request failed"
             throw APIError.requestFailed("Status \(http.statusCode): \(message)")
         }
-        
+
         guard !data.isEmpty else {
             throw APIError.requestFailed("Empty token response")
         }
-        
+
         if let responseString = String(data: data, encoding: .utf8) {
             let lowercased = responseString.lowercased()
-            if lowercased.contains("\"error\"") || 
+            if lowercased.contains("\"error\"") ||
                (lowercased.contains("\"message\"") && (lowercased.contains("invalid") || lowercased.contains("incorrect") || lowercased.contains("wrong") || lowercased.contains("unauthorized") || lowercased.contains("failed"))) {
                 throw APIError.requestFailed("Authentication failed: Invalid credentials")
             }
         }
-        
+
         struct TokenResp: Decodable { let token: String }
         guard let decoded = try? JSONDecoder().decode(TokenResp.self, from: data) else {
             if let errorString = String(data: data, encoding: .utf8) {
@@ -102,11 +102,11 @@ struct APIClient {
             }
             throw APIError.decodingFailed
         }
-        
+
         guard !decoded.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw APIError.requestFailed("Authentication failed: Empty token received")
         }
-        
+
         return decoded.token
     }
 
@@ -139,7 +139,7 @@ struct APIClient {
         guard let http = response as? HTTPURLResponse else {
             throw APIError.requestFailed("No HTTP response")
         }
-        
+
         guard http.statusCode == 200 else {
             let message = String(data: data, encoding: .utf8) ?? "Request failed"
             if http.statusCode == 403 && message.localizedCaseInsensitiveContains("Email not verified") {
@@ -147,11 +147,11 @@ struct APIClient {
             }
             throw APIError.requestFailed("Status \(http.statusCode): \(message)")
         }
-        
+
         guard !data.isEmpty else {
             throw APIError.requestFailed("Empty authentication response")
         }
-        
+
         if let responseString = String(data: data, encoding: .utf8) {
             let lowercased = responseString.lowercased()
             if lowercased.contains("\"error\"") || lowercased.contains("\"message\"") && (lowercased.contains("invalid") || lowercased.contains("incorrect") || lowercased.contains("wrong") || lowercased.contains("unauthorized") || lowercased.contains("failed")) {
@@ -167,14 +167,14 @@ struct APIClient {
             }
             throw APIError.decodingFailed
         }
-        
+
         guard !auth.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw APIError.requestFailed("Authentication failed: Empty token received")
         }
         guard !auth.user.email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw APIError.requestFailed("Authentication failed: Invalid user data")
         }
-        
+
         return auth
     }
 
@@ -410,12 +410,12 @@ struct APIClient {
         var components = URLComponents(url: base.appendingPathComponent("/api/cards"), resolvingAgainstBaseURL: false)
         components?.queryItems = [URLQueryItem(name: "userId", value: userId)]
         guard let url = components?.url else { throw APIError.invalidURL }
-        
+
         var request = URLRequest(url: url)
         if let token = token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        
+
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             let message = String(data: data, encoding: .utf8) ?? "Request failed"
@@ -526,14 +526,14 @@ struct APIClient {
         var components = URLComponents(url: base.appendingPathComponent("/api/transactions"), resolvingAgainstBaseURL: false)
         components?.queryItems = [URLQueryItem(name: "userId", value: userId)]
         guard let url = components?.url else { throw APIError.invalidURL }
-        
+
         print("[APIClient] fetchTransactions: URL: \(url.absoluteString), hasToken: \(token != nil)")
-        
+
         var request = URLRequest(url: url)
         if let token = token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        
+
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             let message = String(data: data, encoding: .utf8) ?? "Request failed"
@@ -544,7 +544,7 @@ struct APIClient {
             }
             throw APIError.requestFailed("Status \(statusCode): \(message)")
         }
-        
+
         print("[APIClient] ✅ fetchTransactions: Got response, data size: \(data.count) bytes")
         struct TxRow: Decodable {
             let id: String
@@ -575,7 +575,7 @@ struct APIClient {
                     ?? container.decodeIfPresent(String.self, forKey: .user_id)
                 cardId = try container.decodeIfPresent(String.self, forKey: .cardId)
                     ?? container.decodeIfPresent(String.self, forKey: .card_id)
-                
+
                 if let amountNumber = try? container.decode(Double.self, forKey: .amount) {
                     amount = amountNumber
                 } else if let amountString = try? container.decode(String.self, forKey: .amount),
@@ -584,7 +584,7 @@ struct APIClient {
                 } else {
                     amount = 0
                 }
-                
+
                 category = try container.decodeIfPresent(String.self, forKey: .category)
                     ?? container.decodeIfPresent(String.self, forKey: .categoryName)
                     ?? container.decodeIfPresent(String.self, forKey: .category_name)
@@ -598,23 +598,23 @@ struct APIClient {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         decoder.keyDecodingStrategy = .useDefaultKeys
-        
+
         if let responseString = String(data: data, encoding: .utf8) {
             print("[APIClient] fetchTransactions raw response: \(responseString.prefix(1000))")
         }
-        
+
         guard let decoded = try? decoder.decode(Resp.self, from: data) else {
             if let responseString = String(data: data, encoding: .utf8) {
                 print("[APIClient] ❌ fetchTransactions decode failed. Response: \(responseString.prefix(500))")
             }
             throw APIError.decodingFailed
         }
-        
+
         print("[APIClient] ✅ fetchTransactions decoded: \(decoded.transactions.count) transactions")
-        
+
         let df = ISO8601DateFormatter()
         df.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        
+
         return decoded.transactions.map { row in
             let parsedDate = df.date(from: row.createdAt) ?? ISO8601DateFormatter().date(from: row.createdAt) ?? .now
             print("[APIClient] Parsed date: \(row.createdAt) -> \(parsedDate)")
@@ -639,7 +639,7 @@ struct APIClient {
         if let token = token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        
+
         let (data, response) = try await URLSession.shared.data(for: request)
         try validateHTTP(response, data: data)
 
@@ -708,7 +708,7 @@ struct APIClient {
         if let token = token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        
+
         let (data, response) = try await URLSession.shared.data(for: request)
         try validateHTTP(response, data: data)
 
@@ -740,40 +740,40 @@ struct APIClient {
     }
 
     // MARK: - Groq AI
-    
+
     struct GroqMessage: Codable {
         let role: String
         let content: String
     }
-    
+
     struct GroqResponse: Decodable {
         let id: String?
         let choices: [GroqChoice]
         let usage: GroqUsage?
     }
-    
+
     struct GroqChoice: Decodable {
         let message: GroqMessage
         let finishReason: String?
-        
+
         enum CodingKeys: String, CodingKey {
             case message
             case finishReason = "finish_reason"
         }
     }
-    
+
     struct GroqUsage: Decodable {
         let promptTokens: Int?
         let completionTokens: Int?
         let totalTokens: Int?
-        
+
         enum CodingKeys: String, CodingKey {
             case promptTokens = "prompt_tokens"
             case completionTokens = "completion_tokens"
             case totalTokens = "total_tokens"
         }
     }
-    
+
     func chatWithGroq(token: String, messages: [GroqMessage]) async throws -> String {
         guard let base = baseURL else { throw APIError.invalidURL }
         let url = base.appendingPathComponent("/api/groq")
@@ -781,7 +781,7 @@ struct APIClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        
+
         let body: [String: Any] = [
             "messages": messages.map { ["role": $0.role, "content": $0.content] },
             "model": "openai/gpt-oss-120b",
@@ -793,20 +793,20 @@ struct APIClient {
             "stop": NSNull()
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
-        
+
         let (data, response) = try await URLSession.shared.data(for: request)
         try validateHTTP(response, data: data)
-        
+
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         guard let groqResponse = try? decoder.decode(GroqResponse.self, from: data),
               let firstChoice = groqResponse.choices.first else {
             throw APIError.decodingFailed
         }
-        
+
         return firstChoice.message.content
     }
-    
+
     func chatWithGroqStreaming(token: String, messages: [GroqMessage], userId: String) -> AsyncThrowingStream<String, Error> {
         return AsyncThrowingStream { continuation in
             Task {
@@ -814,19 +814,19 @@ struct APIClient {
                     continuation.finish(throwing: APIError.invalidURL)
                     return
                 }
-                
+
                 let url = base.appendingPathComponent("/api/groq")
                 var request = URLRequest(url: url)
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-                
+
                 let systemMessage: [[String: String]] = [
                     ["role": "system", "content": "You are a helpful financial assistant. Keep your responses concise and to the point. Focus on actionable advice and key insights. Avoid unnecessary elaboration."]
                 ]
-                
+
                 let allMessages = systemMessage + messages.map { ["role": $0.role, "content": $0.content] }
-                
+
                 let body: [String: Any] = [
                     "messages": allMessages,
                     "model": "openai/gpt-oss-120b",
@@ -838,17 +838,17 @@ struct APIClient {
                     "stop": NSNull(),
                     "userId": userId
                 ]
-                
+
                 do {
                     request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
-                    
+
                     let (asyncBytes, response) = try await URLSession.shared.bytes(for: request)
-                    
+
                     guard let httpResponse = response as? HTTPURLResponse else {
                         continuation.finish(throwing: APIError.requestFailed("Invalid HTTP response"))
                         return
                     }
-                    
+
                     guard (200..<300).contains(httpResponse.statusCode) else {
                         var errorData = Data()
                         for try await byte in asyncBytes {
@@ -858,29 +858,29 @@ struct APIClient {
                         continuation.finish(throwing: APIError.requestFailed("Status \(httpResponse.statusCode): \(errorMessage)"))
                         return
                     }
-                    
+
                     var buffer = Data()
                     for try await byte in asyncBytes {
                         buffer.append(byte)
-                        
+
                         if let text = String(data: buffer, encoding: .utf8) {
                             let lines = text.components(separatedBy: "\n")
                             if lines.count > 1 {
                                 buffer = (lines.last?.data(using: .utf8) ?? Data())
-                                
+
                                 for line in lines.dropLast() {
                                     let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                                     guard !trimmed.isEmpty else { continue }
-                                    
+
                                     if trimmed.hasPrefix("data: ") {
                                         let data = String(trimmed.dropFirst(6))
                                         if data == "[DONE]" {
                                             continuation.finish()
                                             return
                                         }
-                                        
+
                                         guard let jsonData = data.data(using: .utf8) else { continue }
-                                        
+
                                 let decoder = JSONDecoder()
                                 decoder.keyDecodingStrategy = .convertFromSnakeCase
                                 if let parsed = try? decoder.decode(GroqStreamChunk.self, from: jsonData),
@@ -893,7 +893,7 @@ struct APIClient {
                             }
                         }
                     }
-                    
+
                     if !buffer.isEmpty, let text = String(data: buffer, encoding: .utf8) {
                         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                         if !trimmed.isEmpty && trimmed.hasPrefix("data: ") {
@@ -909,7 +909,7 @@ struct APIClient {
                             }
                         }
                     }
-                    
+
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -917,15 +917,15 @@ struct APIClient {
             }
         }
     }
-    
+
     struct GroqStreamChunk: Decodable {
         let choices: [GroqStreamChoice]
     }
-    
+
     struct GroqStreamChoice: Decodable {
         let delta: GroqStreamDelta
     }
-    
+
     struct GroqStreamDelta: Decodable {
         let content: String?
     }
@@ -937,7 +937,7 @@ struct APIClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        
+
         let body: [String: Any] = [
             "userId": userId,
             "subject": subject,
@@ -945,9 +945,9 @@ struct APIClient {
             "initialMessage": initialMessage
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
-        
+
         let (data, response) = try await URLSession.shared.data(for: request)
-        
+
         if let httpResponse = response as? HTTPURLResponse {
             if httpResponse.statusCode == 500 {
                 if let responseString = String(data: data, encoding: .utf8),
@@ -959,7 +959,7 @@ struct APIClient {
                 }
             }
         }
-        
+
         try validateHTTP(response, data: data, allowEmptyBody: true)
     }
 
@@ -968,20 +968,20 @@ struct APIClient {
         var components = URLComponents(url: base.appendingPathComponent("/api/tickets"), resolvingAgainstBaseURL: false)
         components?.queryItems = [URLQueryItem(name: "userId", value: userId)]
         guard let url = components?.url else { throw APIError.invalidURL }
-        
+
         print("[APIClient] fetchTickets: URL: \(url.absoluteString), hasToken: \(token != nil)")
-        
+
         var request = URLRequest(url: url)
         if let token = token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        
+
         let (data, response) = try await URLSession.shared.data(for: request)
-        
+
         guard let http = response as? HTTPURLResponse else {
             throw APIError.requestFailed("No HTTP response")
         }
-        
+
         guard http.statusCode == 200 else {
             let message = String(data: data, encoding: .utf8) ?? "Request failed"
             print("[APIClient] ❌ fetchTickets failed: Status \(http.statusCode), Message: \(message.prefix(200))")
@@ -996,25 +996,25 @@ struct APIClient {
             }
             throw APIError.requestFailed("Status \(http.statusCode): \(message)")
         }
-        
+
         print("[APIClient] ✅ fetchTickets: Got response, data size: \(data.count) bytes")
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             let message = String(data: data, encoding: .utf8) ?? "Request failed"
             throw APIError.requestFailed("Status \((response as? HTTPURLResponse)?.statusCode ?? 0): \(message)")
         }
-        
+
         struct TicketRow: Decodable {
             let id: String
             let subject: String
             let status: String
             let updatedAt: String?
             let updated_at: String?
-            
+
             enum CodingKeys: String, CodingKey {
                 case id, subject, status
                 case updatedAt, updated_at
             }
-            
+
             init(from decoder: Decoder) throws {
                 let container = try decoder.container(keyedBy: CodingKeys.self)
                 id = try container.decode(String.self, forKey: .id)
@@ -1046,7 +1046,7 @@ struct APIClient {
                 )
             }
         }
-        
+
         return decoded.tickets.map { row in
             let status = SupportTicket.Status(rawValue: row.status.lowercased()) ?? .open
             return SupportTicket(
@@ -1057,7 +1057,7 @@ struct APIClient {
             )
         }
     }
-    
+
     struct TicketMessage: Codable, Identifiable {
         let id: String
         let ticketId: String
@@ -1065,7 +1065,9 @@ struct APIClient {
         let senderType: String
         let content: String
         let createdAt: String
-        
+        let readByUserAt: String?
+        let readBySupportAt: String?
+
         enum CodingKeys: String, CodingKey {
             case id
             case ticketId
@@ -1077,17 +1079,32 @@ struct APIClient {
             case content
             case createdAt
             case created_at
+            case readByUserAt
+            case read_by_user_at
+            case readBySupportAt
+            case read_by_support_at
         }
-        
-        init(id: String, ticketId: String, userId: String?, senderType: String, content: String, createdAt: String) {
+
+        init(
+            id: String,
+            ticketId: String,
+            userId: String?,
+            senderType: String,
+            content: String,
+            createdAt: String,
+            readByUserAt: String? = nil,
+            readBySupportAt: String? = nil
+        ) {
             self.id = id
             self.ticketId = ticketId
             self.userId = userId
             self.senderType = senderType
             self.content = content
             self.createdAt = createdAt
+            self.readByUserAt = readByUserAt
+            self.readBySupportAt = readBySupportAt
         }
-        
+
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             id = try container.decode(String.self, forKey: .id)
@@ -1100,8 +1117,12 @@ struct APIClient {
             content = try container.decode(String.self, forKey: .content)
             createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
                 ?? container.decode(String.self, forKey: .created_at)
+            readByUserAt = try container.decodeIfPresent(String.self, forKey: .readByUserAt)
+                ?? container.decodeIfPresent(String.self, forKey: .read_by_user_at)
+            readBySupportAt = try container.decodeIfPresent(String.self, forKey: .readBySupportAt)
+                ?? container.decodeIfPresent(String.self, forKey: .read_by_support_at)
         }
-        
+
         func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
             try container.encode(id, forKey: .id)
@@ -1110,22 +1131,24 @@ struct APIClient {
             try container.encode(senderType, forKey: .senderType)
             try container.encode(content, forKey: .content)
             try container.encode(createdAt, forKey: .createdAt)
+            try container.encodeIfPresent(readByUserAt, forKey: .readByUserAt)
+            try container.encodeIfPresent(readBySupportAt, forKey: .readBySupportAt)
         }
     }
-    
+
     func fetchTicketMessages(ticketId: String, token: String) async throws -> [TicketMessage] {
         guard let base = baseURL else { throw APIError.invalidURL }
         let url = base.appendingPathComponent("/api/tickets/\(ticketId)/messages")
-        
+
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        
+
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             let message = String(data: data, encoding: .utf8) ?? "Request failed"
             throw APIError.requestFailed("Status \((response as? HTTPURLResponse)?.statusCode ?? 0): \(message)")
         }
-        
+
         struct Resp: Decodable { let messages: [TicketMessage] }
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .useDefaultKeys
@@ -1139,28 +1162,28 @@ struct APIClient {
         }
         return decoded.messages
     }
-    
+
     func sendTicketMessage(ticketId: String, content: String, token: String) async throws -> TicketMessage {
         guard let base = baseURL else { throw APIError.invalidURL }
         let url = base.appendingPathComponent("/api/tickets/\(ticketId)/messages")
-        
+
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        
+
         let body: [String: Any] = [
             "content": content,
             "senderType": "user"
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
-        
+
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 201 else {
             let message = String(data: data, encoding: .utf8) ?? "Request failed"
             throw APIError.requestFailed("Status \((response as? HTTPURLResponse)?.statusCode ?? 0): \(message)")
         }
-        
+
         struct Resp: Decodable { let message: TicketMessage }
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .useDefaultKeys
@@ -1174,18 +1197,37 @@ struct APIClient {
         }
         return decoded.message
     }
-    
+
+    func markTicketMessagesRead(ticketId: String, reader: String, supportUserId: String? = nil, token: String) async throws {
+        guard let base = baseURL else { throw APIError.invalidURL }
+        let baseUrl = base.appendingPathComponent("/api/tickets/\(ticketId)/messages/read")
+        var components = URLComponents(url: baseUrl, resolvingAgainstBaseURL: false)
+        var queryItems = [URLQueryItem(name: "reader", value: reader)]
+        if let supportUserId {
+            queryItems.append(URLQueryItem(name: "supportUserId", value: supportUserId))
+        }
+        components?.queryItems = queryItems
+        guard let url = components?.url else { throw APIError.invalidURL }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validateHTTP(response, data: data, allowEmptyBody: true)
+    }
+
     // MARK: - Chat History
-    
+
     func saveChatHistory(userId: String, chatId: String, messages: [ChatMessage], token: String) async throws {
         guard let base = baseURL else { throw APIError.invalidURL }
         let url = base.appendingPathComponent("/api/chat/history")
-        
+
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        
+
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
@@ -1199,14 +1241,14 @@ struct APIClient {
             ]}
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
-        
+
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             let message = String(data: data, encoding: .utf8) ?? "Request failed"
             throw APIError.requestFailed("Status \((response as? HTTPURLResponse)?.statusCode ?? 0): \(message)")
         }
     }
-    
+
     func fetchChatHistory(userId: String, token: String, chatId: String? = nil) async throws -> [ChatMessage] {
         guard let base = baseURL else { throw APIError.invalidURL }
         var components = URLComponents(url: base.appendingPathComponent("/api/chat/history"), resolvingAgainstBaseURL: false)
@@ -1216,26 +1258,26 @@ struct APIClient {
         }
         components?.queryItems = queryItems
         guard let url = components?.url else { throw APIError.invalidURL }
-        
+
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        
+
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             let message = String(data: data, encoding: .utf8) ?? "Request failed"
             throw APIError.requestFailed("Status \((response as? HTTPURLResponse)?.statusCode ?? 0): \(message)")
         }
-        
+
         struct Resp: Decodable {
             let messages: [ChatMessageResponse]
         }
-        
+
         struct ChatMessageResponse: Decodable {
             let role: String
             let content: String
             let timestamp: String
         }
-        
+
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .useDefaultKeys
         guard let decoded = try? decoder.decode(Resp.self, from: data) else {
@@ -1247,10 +1289,10 @@ struct APIClient {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        
+
         let fallbackFormatter = ISO8601DateFormatter()
         fallbackFormatter.timeZone = TimeZone(secondsFromGMT: 0)
-        
+
         return fallbackDecoded.messages.map { msg in
             let timestamp: Date
             if let parsed = formatter.date(from: msg.timestamp) {
@@ -1267,14 +1309,14 @@ struct APIClient {
             )
         }
     }
-    
+
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     formatter.timeZone = TimeZone(secondsFromGMT: 0)
-    
+
     let fallbackFormatter = ISO8601DateFormatter()
     fallbackFormatter.timeZone = TimeZone(secondsFromGMT: 0)
-    
+
     return decoded.messages.map { msg in
         let timestamp: Date
         if let parsed = formatter.date(from: msg.timestamp) {
@@ -1291,7 +1333,7 @@ struct APIClient {
         )
     }
     }
-    
+
     func deleteChatHistory(userId: String, token: String, chatId: String? = nil) async throws {
         guard let base = baseURL else { throw APIError.invalidURL }
         var components = URLComponents(url: base.appendingPathComponent("/api/chat/history"), resolvingAgainstBaseURL: false)
@@ -1299,11 +1341,11 @@ struct APIClient {
             components?.queryItems = [URLQueryItem(name: "chatId", value: chatId)]
         }
         guard let url = components?.url else { throw APIError.invalidURL }
-        
+
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        
+
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             let message = String(data: data, encoding: .utf8) ?? "Request failed"

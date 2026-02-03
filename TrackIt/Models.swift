@@ -97,11 +97,11 @@ struct SupportTicket: Identifiable, Codable, Hashable {
     var subject: String
     var detail: String
     var status: Status = .open
-    
+
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }
-    
+
     static func == (lhs: SupportTicket, rhs: SupportTicket) -> Bool {
         lhs.id == rhs.id
     }
@@ -120,7 +120,7 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     var role: String
     var content: String
     var timestamp: Date = Date()
-    
+
     static func == (lhs: ChatMessage, rhs: ChatMessage) -> Bool {
         lhs.id == rhs.id && lhs.role == rhs.role && lhs.content == rhs.content
     }

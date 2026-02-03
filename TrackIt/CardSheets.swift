@@ -14,55 +14,108 @@ struct AddTransactionSheet: View {
 
     var body: some View {
         NavigationView {
-            Form {
-                Section(header: Text("Details")) {
-                    Picker("Type", selection: $kind) {
-                        Text("Select Type").tag(nil as Transaction.Kind?)
-                        Text("Expense").tag(Transaction.Kind.expense as Transaction.Kind?)
-                        Text("Income").tag(Transaction.Kind.income as Transaction.Kind?)
-                    }
-                    .foregroundColor(kind == nil ? Palette.warning : Palette.primary)
-                    
-                    if showKindWarning {
-                        HStack(spacing: 8) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundColor(Palette.warning)
-                            Text("Please select a transaction type!")
-                                .font(.caption.weight(.semibold))
-                                .foregroundColor(Palette.warning)
-                        }
-                        .padding(.vertical, 8)
-                    }
-                    
-                    TextField("Amount", text: $amountText)
-                        .keyboardType(.decimalPad)
-                    
-                    VStack(alignment: .leading, spacing: 8) {
-                        TextField("Category", text: $category)
-                        if !categories.isEmpty {
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 8) {
-                                    ForEach(categories, id: \.self) { item in
-                                        Button {
-                                            category = item
-                                        } label: {
-                                            Text(item)
-                                                .font(.caption.weight(.semibold))
-                                                .padding(.horizontal, 10)
-                                                .padding(.vertical, 8)
-                                                .background(Color.secondary.opacity(0.12), in: Capsule())
-                                        }
-                                        .buttonStyle(.plain)
+            ZStack {
+                AnimatedBackground()
+                    .allowsHitTesting(false)
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 14) {
+                        SheetCard("Type") {
+                            VStack(alignment: .leading, spacing: 12) {
+                                HStack(spacing: 10) {
+                                    kindButton(
+                                        title: "Expense",
+                                        systemImage: "arrow.down.circle.fill",
+                                        value: .expense,
+                                        tint: Palette.danger
+                                    )
+                                    kindButton(
+                                        title: "Income",
+                                        systemImage: "arrow.up.circle.fill",
+                                        value: .income,
+                                        tint: Palette.success
+                                    )
+                                }
+
+                                if showKindWarning {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "exclamationmark.triangle.fill")
+                                            .foregroundColor(Palette.warning)
+                                        Text("Please select a transaction type.")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundColor(Palette.warning)
                                     }
                                 }
                             }
                         }
+
+                        SheetCard("Details") {
+                            VStack(alignment: .leading, spacing: 12) {
+                                LabeledField(
+                                    title: "Amount",
+                                    placeholder: "0.00",
+                                    text: $amountText,
+                                    keyboard: .decimalPad
+                                )
+
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Category")
+                                        .font(.footnote.weight(.semibold))
+                                        .foregroundStyle(Palette.primary.opacity(0.9))
+
+                                    TextField("Groceries", text: $category)
+                                        .textInputAutocapitalization(.words)
+                                        .autocorrectionDisabled()
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 12)
+                                        .softInset(cornerRadius: 16)
+                                        .foregroundStyle(Palette.primary)
+
+                                    if !categories.isEmpty {
+                                        ScrollView(.horizontal, showsIndicators: false) {
+                                            HStack(spacing: 8) {
+                                                ForEach(categories, id: \.self) { item in
+                                                    Button {
+                                                        category = item
+                                                    } label: {
+                                                        Text(item)
+                                                            .font(.caption.weight(.semibold))
+                                                            .padding(.horizontal, 10)
+                                                            .padding(.vertical, 8)
+                                                            .background(Palette.cardAlt, in: Capsule())
+                                                            .overlay(Capsule().stroke(Palette.stroke, lineWidth: 1))
+                                                    }
+                                                    .buttonStyle(.plain)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Date")
+                                        .font(.footnote.weight(.semibold))
+                                        .foregroundStyle(Palette.primary.opacity(0.9))
+
+                                    HStack {
+                                        DatePicker("", selection: $date, displayedComponents: .date)
+                                            .labelsHidden()
+                                        Spacer()
+                                    }
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 10)
+                                    .softInset(cornerRadius: 16)
+
+                                    Text(timeZoneInfo(for: date))
+                                        .font(.footnote)
+                                        .foregroundStyle(Palette.secondary)
+                                }
+                            }
+                        }
                     }
-                    
-                    DatePicker("Date", selection: $date, displayedComponents: .date)
-                    Text(timeZoneInfo(for: date))
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                    .frame(maxWidth: LayoutMetrics.maxContentWidth)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                    .padding(.vertical, 16)
                 }
             }
             .navigationTitle("Add Transaction")
@@ -127,6 +180,26 @@ struct AddTransactionSheet: View {
         let abbrev = tz.abbreviation(for: date) ?? offset
         return "Time zone: \(name) (\(abbrev), \(offset))"
     }
+
+    private func kindButton(title: String, systemImage: String, value: Transaction.Kind, tint: Color) -> some View {
+        let isSelected = kind == value
+        return Button {
+            kind = value
+            showKindWarning = false
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .font(.appFont(size: 15, weight: .semibold))
+                Text(title)
+                    .font(.appFont(size: 14, weight: .semibold))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .minimalSurface(cornerRadius: 16, fill: isSelected ? tint.opacity(0.15) : Palette.cardAlt, stroke: isSelected ? tint.opacity(0.35) : Palette.stroke)
+            .foregroundColor(isSelected ? tint : Palette.secondary)
+        }
+        .buttonStyle(PressableButtonStyle())
+    }
 }
 
 struct AddCardSheet: View {
@@ -141,21 +214,44 @@ struct AddCardSheet: View {
 
     var body: some View {
         NavigationView {
-            Form {
-                Section(header: Text("Card details")) {
-                    TextField("Nickname", text: $nickname)
-                }
-                Section(header: Text("Balance")) {
-                    TextField("Current balance", text: $balanceText)
-                        .keyboardType(.decimalPad)
-                    SectionHeaderRow(title: "Spending limits")
-                    TextField("Daily limit", text: $dailyLimitText)
-                        .keyboardType(.decimalPad)
-                    TextField("Weekly limit", text: $weeklyLimitText)
-                        .keyboardType(.decimalPad)
-                    TextField("Monthly limit", text: $monthlyLimitText)
-                        .keyboardType(.decimalPad)
-                    TextField("Tags (comma separated)", text: $tagsText)
+            ZStack {
+                AnimatedBackground()
+                    .allowsHitTesting(false)
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 14) {
+                        SheetCard("Card details") {
+                            LabeledField(title: "Nickname", placeholder: "Debit Card", text: $nickname)
+                        }
+
+                        SheetCard("Balance") {
+                            LabeledField(
+                                title: "Current balance",
+                                placeholder: "0.00",
+                                text: $balanceText,
+                                keyboard: .decimalPad
+                            )
+                        }
+
+                        SheetCard("Spending limits") {
+                            LabeledField(title: "Daily limit", placeholder: "0.00", text: $dailyLimitText, keyboard: .decimalPad)
+                            LabeledField(title: "Weekly limit", placeholder: "0.00", text: $weeklyLimitText, keyboard: .decimalPad)
+                            LabeledField(title: "Monthly limit", placeholder: "0.00", text: $monthlyLimitText, keyboard: .decimalPad)
+                        }
+
+                        SheetCard("Tags") {
+                            LabeledField(title: "Comma separated", placeholder: "food, travel, business", text: $tagsText)
+                        }
+
+                        Text("Card numbers and CVC are not stored.")
+                            .font(.footnote)
+                            .foregroundStyle(Palette.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 2)
+                    }
+                    .frame(maxWidth: LayoutMetrics.maxContentWidth)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                    .padding(.vertical, 16)
                 }
             }
             .navigationTitle("Add Card")
@@ -253,11 +349,11 @@ struct CardDetailSheet: View {
                         header
 
                         VStack(spacing: 14) {
-                            fieldCard(title: "Card details") {
+                            SheetCard("Card details") {
                                 LabeledField(title: "Nickname", placeholder: "Debit Card", text: $nickname)
                             }
 
-                            fieldCard(title: "Balance") {
+                            SheetCard("Balance") {
                                 LabeledField(
                                     title: "Current balance",
                                     placeholder: "0.00",
@@ -266,13 +362,13 @@ struct CardDetailSheet: View {
                                 )
                             }
 
-                            fieldCard(title: "Spending limits") {
+                            SheetCard("Spending limits") {
                                 LabeledField(title: "Daily limit", placeholder: "0.00", text: $dailyLimitText, keyboard: .decimalPad)
                                 LabeledField(title: "Weekly limit", placeholder: "0.00", text: $weeklyLimitText, keyboard: .decimalPad)
                                 LabeledField(title: "Monthly limit", placeholder: "0.00", text: $monthlyLimitText, keyboard: .decimalPad)
                             }
 
-                            fieldCard(title: "Tags") {
+                            SheetCard("Tags") {
                                 LabeledField(title: "Comma separated", placeholder: "food, travel, business", text: $tagsText)
                             }
 
@@ -282,7 +378,7 @@ struct CardDetailSheet: View {
                             } label: {
                                 HStack(spacing: 10) {
                                     Image(systemName: "trash")
-                                        .font(.system(size: 14, weight: .bold))
+                                        .font(.appFont(size: 14, weight: .bold))
                                     Text("Delete card")
                                         .font(.subheadline.weight(.semibold))
                                     Spacer()
@@ -290,7 +386,7 @@ struct CardDetailSheet: View {
                                 .foregroundColor(Palette.danger)
                                 .padding(14)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Palette.cardAlt, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                .background(Palette.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                                 .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Palette.stroke, lineWidth: 1))
                             }
                             .buttonStyle(PressableButtonStyle())
@@ -319,32 +415,27 @@ struct CardDetailSheet: View {
     private var header: some View {
         HStack(spacing: 12) {
             Button("Close") { dismiss() }
-                .font(.subheadline.weight(.semibold))
+                .font(.appFont(size: 13, weight: .semibold))
                 .foregroundColor(Palette.primary)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
-                .background(Palette.cardAlt.opacity(0.95), in: Capsule())
-                .overlay(Capsule().stroke(Palette.stroke, lineWidth: 1))
+                .minimalSurface(cornerRadius: 16, fill: Palette.cardAlt)
                 .buttonStyle(PressableButtonStyle())
 
             Spacer()
 
             Text("Card Details")
-                .font(.headline.weight(.bold))
+                .font(.appFont(size: 16, weight: .semibold))
                 .foregroundColor(Palette.primary)
 
             Spacer()
 
             Button("Save") { save() }
-                .font(.subheadline.weight(.semibold))
+                .font(.appFont(size: 13, weight: .semibold))
                 .foregroundColor(.white)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
-                .background(
-                    LinearGradient(colors: [Palette.accentAlt, Palette.accent], startPoint: .topLeading, endPoint: .bottomTrailing),
-                    in: Capsule()
-                )
-                .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 1))
+                .minimalSurface(cornerRadius: 16, fill: Palette.primary, stroke: Palette.primary)
                 .opacity(canSave ? 1 : 0.45)
                 .disabled(!canSave)
                 .buttonStyle(PressableButtonStyle())
@@ -354,20 +445,6 @@ struct CardDetailSheet: View {
         .padding(.horizontal, LayoutMetrics.horizontalPadding)
         .padding(.top, 16)
         .padding(.bottom, 8)
-    }
-
-    private func fieldCard<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(Palette.secondary)
-
-            VStack(spacing: 12) {
-                content()
-            }
-        }
-        .padding(14)
-        .glassCard(cornerRadius: 20, tint: [Palette.accentAlt, Palette.accent], shadowColor: Palette.accentAlt, darkOverlayOpacity: 0.12)
     }
 
     private func save() {
@@ -404,14 +481,27 @@ struct CardDetailSheet: View {
     }
 }
 
-private struct SectionHeaderRow: View {
-    var title: String
+private struct SheetCard<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
 
     var body: some View {
-        Text(title)
-            .font(.footnote.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .padding(.top, 4)
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(.appFont(size: 12, weight: .semibold))
+                .foregroundStyle(Palette.secondary)
+
+            VStack(spacing: 12) {
+                content
+            }
+        }
+        .padding(14)
+        .minimalSurface(cornerRadius: 18, fill: Palette.cardAlt)
     }
 }
 
@@ -424,8 +514,8 @@ private struct LabeledField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(Palette.primary.opacity(0.9))
+                .font(.appFont(size: 12, weight: .semibold))
+                .foregroundStyle(Palette.secondary)
 
             TextField(placeholder, text: $text)
                 .textInputAutocapitalization(.never)
@@ -435,8 +525,7 @@ private struct LabeledField: View {
 #endif
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
-                .background(Palette.cardAlt.opacity(0.95), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Palette.stroke, lineWidth: 1))
+                .minimalSurface(cornerRadius: 16, fill: Palette.card)
                 .foregroundStyle(Palette.primary)
         }
     }
