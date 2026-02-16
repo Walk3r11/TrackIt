@@ -240,35 +240,46 @@ struct HomeDashboard: View {
                 }
                 .buttonStyle(PressableButtonStyle())
             } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: 14) {
-                        ForEach(Array(cards.enumerated()), id: \.element.id) { index, card in
-                            let isFocused = index == selectedCardIndex
-                            CardTile(card: card, isOverLimit: overLimitCardIds.contains(card.id))
-                                .frame(width: 220)
-                                .scaleEffect(isFocused ? 1 : 0.95)
-                                .opacity(isFocused ? 1 : 0.85)
-                                .animation(.easeInOut(duration: 0.2), value: isFocused)
-                                .id(index)
+                GeometryReader { geo in
+                    let cardWidth = geo.size.width
+                    VStack(spacing: 10) {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            LazyHStack(spacing: 0) {
+                                ForEach(Array(cards.enumerated()), id: \.element.id) { index, card in
+                                    CardTile(card: card, isOverLimit: overLimitCardIds.contains(card.id))
+                                        .frame(width: cardWidth)
+                                        .id(index)
+                                }
+                            }
+                            .scrollTargetLayout()
+                        }
+                        .scrollTargetBehavior(.paging)
+                        .scrollPosition(id: $cardsScrollId)
+                        .onAppear {
+                            cardsScrollId = selectedCardIndex
+                        }
+                        .onChange(of: selectedCardIndex) { _, newValue in
+                            cardsScrollId = newValue
+                        }
+                        .onChange(of: cardsScrollId) { _, newValue in
+                            if let newValue, newValue != selectedCardIndex {
+                                selectedCardIndex = newValue
+                            }
+                        }
+
+                        if cards.count > 1 {
+                            HStack(spacing: 6) {
+                                ForEach(0..<cards.count, id: \.self) { index in
+                                    Capsule()
+                                        .fill(index == selectedCardIndex ? Palette.primary : Palette.stroke)
+                                        .frame(width: index == selectedCardIndex ? 18 : 6, height: 6)
+                                }
+                            }
+                            .animation(.easeInOut(duration: 0.2), value: selectedCardIndex)
                         }
                     }
-                    .scrollTargetLayout()
-                    .padding(.horizontal, 6)
-                    .padding(.trailing, 24)
                 }
-                .scrollTargetBehavior(.viewAligned)
-                .scrollPosition(id: $cardsScrollId)
-                .onAppear {
-                    cardsScrollId = selectedCardIndex
-                }
-                .onChange(of: selectedCardIndex) { _, newValue in
-                    cardsScrollId = newValue
-                }
-                .onChange(of: cardsScrollId) { _, newValue in
-                    if let newValue, newValue != selectedCardIndex {
-                        selectedCardIndex = newValue
-                    }
-                }
+                .frame(height: 140)
             }
         }
     }
