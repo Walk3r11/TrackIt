@@ -38,20 +38,20 @@ struct HomeDashboard: View {
                 .allowsHitTesting(false)
 
             ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 16) {
                     header
                     balanceHero
                     quickActions
                     cardsStrip
                     recentActivity
                     spendingBreakdown
-                    Spacer(minLength: 20)
+                    Spacer(minLength: 16)
                 }
                 .frame(maxWidth: 520, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.horizontal, 22)
-                .padding(.top, 18)
-                .padding(.bottom, 28)
+                .padding(.top, 14)
+                .padding(.bottom, 24)
             }
         }
         .sheet(isPresented: $showAddCardSheet) {
@@ -135,7 +135,7 @@ struct HomeDashboard: View {
     }
 
     private var balanceHero: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Net Balance")
                     .font(.appFont(size: 13, weight: .semibold))
@@ -150,9 +150,11 @@ struct HomeDashboard: View {
                 .font(.appFont(size: 34, weight: .bold))
                 .foregroundStyle(Palette.primary)
 
-            HStack(spacing: 16) {
+            HStack(spacing: 12) {
                 MetricChip(title: "Income", value: totalIncome, color: Palette.success)
+                    .frame(maxWidth: .infinity)
                 MetricChip(title: "Expenses", value: totalExpenses, color: Palette.danger)
+                    .frame(maxWidth: .infinity)
             }
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -350,19 +352,23 @@ private struct MetricChip: View {
     let color: Color
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(alignment: .center, spacing: 8) {
             Circle()
                 .fill(color)
                 .frame(width: 6, height: 6)
             Text(title)
                 .font(.appFont(size: 12, weight: .semibold))
                 .foregroundStyle(Palette.secondary)
-            Spacer()
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+            Spacer(minLength: 4)
             Text(value.formatted(.currency(code: AppConstants.Currency.code)))
-                .font(.appFont(size: 12, weight: .semibold))
+                .font(.appFont(size: 13, weight: .semibold))
                 .foregroundStyle(Palette.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
         }
-        .padding(.vertical, 8)
+        .padding(.vertical, 6)
         .padding(.horizontal, 12)
         .minimalSurface(cornerRadius: 14, fill: Palette.cardAlt)
     }

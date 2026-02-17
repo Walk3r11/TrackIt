@@ -11,6 +11,32 @@ enum LayoutMetrics {
     static let horizontalPadding: CGFloat = 16
 }
 
+private enum DashboardPersistence {
+    static let totalIncomeKey = "dashboardTotalIncome"
+    static let totalExpensesKey = "dashboardTotalExpenses"
+    static let lifetimeIncomeKey = "dashboardLifetimeIncome"
+    static let lifetimeExpensesKey = "dashboardLifetimeExpenses"
+
+    static func loadTotalIncome() -> Double {
+        (UserDefaults.standard.object(forKey: totalIncomeKey) as? Double) ?? 0
+    }
+    static func loadTotalExpenses() -> Double {
+        (UserDefaults.standard.object(forKey: totalExpensesKey) as? Double) ?? 0
+    }
+    static func loadLifetimeIncome() -> Double {
+        (UserDefaults.standard.object(forKey: lifetimeIncomeKey) as? Double) ?? 0
+    }
+    static func loadLifetimeExpenses() -> Double {
+        (UserDefaults.standard.object(forKey: lifetimeExpensesKey) as? Double) ?? 0
+    }
+    static func save(totalIncome: Double, totalExpenses: Double, lifetimeIncome: Double, lifetimeExpenses: Double) {
+        UserDefaults.standard.set(totalIncome, forKey: totalIncomeKey)
+        UserDefaults.standard.set(totalExpenses, forKey: totalExpensesKey)
+        UserDefaults.standard.set(lifetimeIncome, forKey: lifetimeIncomeKey)
+        UserDefaults.standard.set(lifetimeExpenses, forKey: lifetimeExpensesKey)
+    }
+}
+
 // MARK: - ContentView
 struct ContentView: View {
     @EnvironmentObject private var session: SessionManager
@@ -63,7 +89,6 @@ private func applyRootModifiers<Content: View>(to content: Content) -> some View
         .preferredColorScheme(.light)
         .appBackground()
         .transaction { transaction in
-
             if isRefreshing && transaction.animation != nil {
                 transaction.animation = .none
             }
@@ -73,6 +98,9 @@ private func applyRootModifiers<Content: View>(to content: Content) -> some View
         let view1 = view0.onAppear {
             loadPersistedData()
             cardsLocked = requireCardUnlock
+            if !supportTickets.isEmpty, let token = session.token {
+                Task { await preloadTicketMessages(token: token, tickets: supportTickets) }
+            }
             refreshFromServer()
             checkSelectedCardDailyLimit()
             setupWebSocket()
@@ -186,13 +214,10 @@ private func applyRootModifiers<Content: View>(to content: Content) -> some View
 
             startLiveRefreshLoop()
         } else if newPhase == .inactive {
-
             stopLiveRefreshLoop()
         }
     }
     .onDisappear {
-
-
     }
 
     let view8 = view7.sheet(item: $selectedCardDetail) { card in
@@ -298,10 +323,13 @@ private func applyRootModifiers<Content: View>(to content: Content) -> some View
 	                requireCardUnlock: $requireCardUnlock,
 	                supportTickets: $supportTickets,
 	                showSupportSheet: $showSupportSheet,
+	                transactions: transactions,
+	                cards: cards,
 	                onToggleCardLock: { enabled in
 	                    requireCardUnlock = enabled
 	                    cardsLocked = enabled
-	                }
+	                },
+	                onSyncNow: { refreshFromServer() }
 	            )
             .environmentObject(session)
             .onAppear {
@@ -508,10 +536,7 @@ private func applyRootModifiers<Content: View>(to content: Content) -> some View
     }
 
 	    private func refreshFromServer() {
-	        guard !isRefreshing else {
-	            print("⚠️ refreshFromServer: Already refreshing, skipping")
-	            return
-	        }
+	        guard !isRefreshing else { return }
 
 	        guard let userId = session.user?.id else {
 	            print("⚠️ refreshFromServer: No user ID")
@@ -681,6 +706,10 @@ private func applyRootModifiers<Content: View>(to content: Content) -> some View
 	                if let tickets = remoteTickets {
 	                    if !tickets.isEmpty {
 	                        self.supportTickets = tickets
+	                        self.saveTickets()
+	                        if let token = token {
+	                            Task { await self.preloadTicketMessages(token: token, tickets: tickets) }
+	                        }
 	                    } else {
 	                        print("⚠️ Tickets API returned empty array, keeping existing tickets")
 					}
@@ -783,12 +812,12 @@ private func applyRootModifiers<Content: View>(to content: Content) -> some View
     }
 
     @State private var cachedFilteredIndices: [Int] = []
-    @State private var cachedTotalIncome: Double = 0
-    @State private var cachedTotalExpenses: Double = 0
+    @State private var cachedTotalIncome: Double = DashboardPersistence.loadTotalIncome()
+    @State private var cachedTotalExpenses: Double = DashboardPersistence.loadTotalExpenses()
     @State private var cachedCategoryBreakdown: [String: Double] = [:]
     @State private var cachedIncomeCategoryBreakdown: [String: Double] = [:]
-    @State private var cachedLifetimeIncome: Double = 0
-    @State private var cachedLifetimeExpenses: Double = 0
+    @State private var cachedLifetimeIncome: Double = DashboardPersistence.loadLifetimeIncome()
+    @State private var cachedLifetimeExpenses: Double = DashboardPersistence.loadLifetimeExpenses()
     @State private var cachePeriod: Period = .monthly
     @State private var cacheCardIndex: Int = 0
     @State private var cacheTransactionCount: Int = 0
@@ -887,22 +916,32 @@ private func applyRootModifiers<Content: View>(to content: Content) -> some View
             }
         }
 
-        cachedTotalIncome = income
-        cachedTotalExpenses = expenses
-        cachedCategoryBreakdown = expenseBreakdown
-        cachedIncomeCategoryBreakdown = incomeBreakdown
-
-        if cacheTransactionCount != transactions.count {
-            cachedLifetimeIncome = 0
-            cachedLifetimeExpenses = 0
-            for tx in transactions {
-                if tx.kind == .income {
-                    cachedLifetimeIncome += tx.amount
-                } else {
-                    cachedLifetimeExpenses += abs(tx.amount)
-                }
+        var lifetimeInc: Double = 0
+        var lifetimeExp: Double = 0
+        for tx in transactions {
+            if tx.kind == .income {
+                lifetimeInc += tx.amount
+            } else {
+                lifetimeExp += abs(tx.amount)
             }
         }
+
+        let valuesChanged = income != cachedTotalIncome || expenses != cachedTotalExpenses
+            || lifetimeInc != cachedLifetimeIncome || lifetimeExp != cachedLifetimeExpenses
+        if valuesChanged {
+            cachedTotalIncome = income
+            cachedTotalExpenses = expenses
+            cachedLifetimeIncome = lifetimeInc
+            cachedLifetimeExpenses = lifetimeExp
+            DashboardPersistence.save(
+                totalIncome: income,
+                totalExpenses: expenses,
+                lifetimeIncome: lifetimeInc,
+                lifetimeExpenses: lifetimeExp
+            )
+        }
+        cachedCategoryBreakdown = expenseBreakdown
+        cachedIncomeCategoryBreakdown = incomeBreakdown
     }
 
     private var lifetimeIncome: Double {
@@ -938,6 +977,7 @@ private func applyRootModifiers<Content: View>(to content: Content) -> some View
         restoreTransactionsFromDisk()
         restoreCategoriesFromDisk()
         restoreTicketsFromDisk()
+        updateFilteredTransactionsCacheSync()
 
 	        refreshFromServer()
     }
@@ -947,6 +987,10 @@ private func applyRootModifiers<Content: View>(to content: Content) -> some View
         if let storedTickets: [SupportTicket] = SecureStore.load([SupportTicket].self, key: "supportTickets"), !storedTickets.isEmpty {
             supportTickets = storedTickets
         }
+    }
+
+    private func saveTickets() {
+        SecureStore.save(supportTickets, key: "supportTickets")
     }
 
 	    @MainActor
@@ -1183,9 +1227,11 @@ private func applyRootModifiers<Content: View>(to content: Content) -> some View
         }
 
         if let messageData = data["message"]?.value as? [String: Any],
-           let ticketMessage = decodeTicketMessage(messageData),
-           ticketMessage.senderType == "support" {
-            scheduleLocalSupportNotification(for: ticketMessage)
+           let ticketMessage = decodeTicketMessage(messageData) {
+            TicketChatView.appendMessageToCache(ticketId: ticketMessage.ticketId, message: ticketMessage)
+            if ticketMessage.senderType == "support" {
+                scheduleLocalSupportNotification(for: ticketMessage)
+            }
         }
 
 
@@ -1203,9 +1249,7 @@ private func applyRootModifiers<Content: View>(to content: Content) -> some View
                let transactionId = UUID(uuidString: transactionIdString) {
                 transactions.removeAll { $0.id == transactionId }
                 saveTransactions()
-                DispatchQueue.main.async { [self] in
-                    updateFilteredTransactionsCacheSync()
-                }
+                updateFilteredTransactionsCacheSync()
             }
         }
     }
@@ -1235,9 +1279,7 @@ private func applyRootModifiers<Content: View>(to content: Content) -> some View
 
         saveTransactions()
         checkSelectedCardDailyLimit()
-        DispatchQueue.main.async { [self] in
-            updateFilteredTransactionsCacheSync()
-        }
+        updateFilteredTransactionsCacheSync()
     }
 
     private func handleCardUpdate(_ cardData: [String: Any]) {
@@ -1262,6 +1304,18 @@ private func applyRootModifiers<Content: View>(to content: Content) -> some View
     private func decodeTicketMessage(_ data: [String: Any]) -> APIClient.TicketMessage? {
         guard let jsonData = try? JSONSerialization.data(withJSONObject: data) else { return nil }
         return try? JSONDecoder().decode(APIClient.TicketMessage.self, from: jsonData)
+    }
+
+    private func preloadTicketMessages(token: String, tickets: [SupportTicket]) async {
+        for ticket in tickets {
+            guard !Task.isCancelled else { return }
+            do {
+                let messages = try await APIClient.shared.fetchTicketMessages(ticketId: ticket.id.uuidString, token: token)
+                await MainActor.run {
+                    TicketChatView.persistMessagesLocally(ticketId: ticket.id.uuidString, messages: messages)
+                }
+            } catch {}
+        }
     }
 
     private func scheduleLocalSupportNotification(for message: APIClient.TicketMessage) {

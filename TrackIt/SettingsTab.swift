@@ -7,15 +7,18 @@ struct SettingsTab: View {
     @Binding var requireCardUnlock: Bool
     @Binding var supportTickets: [SupportTicket]
     @Binding var showSupportSheet: Bool
+    var transactions: [Transaction]
+    var cards: [CardInfo]
     var onToggleCardLock: (Bool) -> Void
+    var onSyncNow: () -> Void
 
     @State private var showDeleteConfirmation = false
     @State private var showPasswordReset = false
     @State private var showHelpCenter = false
     @State private var showTerms = false
     @State private var showPrivacy = false
-    @State private var showContactSupport = false
     @State private var showTickets = false
+    @State private var exportItem: ExportFileItem?
 
     @AppStorage("pendingSupportTicketId") private var pendingSupportTicketId = ""
 
@@ -55,8 +58,8 @@ struct SettingsTab: View {
         .sheet(isPresented: $showPrivacy) {
             LegalSheet(title: "Privacy Policy", content: privacyPolicyContent, isPresented: $showPrivacy)
         }
-        .sheet(isPresented: $showContactSupport) {
-            ContactSupportSheet()
+        .sheet(item: $exportItem) { item in
+            ShareSheet(activityItems: [item.url])
         }
         .sheet(isPresented: $showTickets) {
             TicketsSheet(
@@ -133,20 +136,33 @@ struct SettingsTab: View {
             Button {
                 exportData()
             } label: {
-                SettingsButtonRow(title: "Export Data", subtitle: "Download your transaction history")
-            }
-
-            Button {
-                importData()
-            } label: {
-                SettingsButtonRow(title: "Import Data", subtitle: "Upload transactions from file")
+                SettingsButtonRow(title: "Export Data", subtitle: "Save as PDF to Files")
             }
 
             Button {
                 syncNow()
             } label: {
-                SettingsButtonRow(title: "Sync Now", subtitle: "Refresh all data")
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.appFont(size: 16, weight: .semibold))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Sync Now")
+                            .font(.appFont(size: 15, weight: .semibold))
+                        Text("Refresh all data from server")
+                            .font(.appFont(size: 11))
+                            .foregroundStyle(Color.white.opacity(0.85))
+                    }
+                    Spacer()
+                }
+                .foregroundStyle(.white)
+                .padding(.vertical, 14)
+                .padding(.horizontal, 16)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Palette.primary)
+                )
             }
+            .buttonStyle(.plain)
         }
     }
 
@@ -205,19 +221,13 @@ struct SettingsTab: View {
             Button {
                 showHelpCenter = true
             } label: {
-                SettingsButtonRow(title: "Help Center", subtitle: "FAQs and guides")
+                SettingsButtonRow(title: "Help Center", subtitle: "FAQs, guides, and how-to")
             }
 
             Button {
                 showTickets = true
             } label: {
-                SettingsButtonRow(title: "Support Tickets", subtitle: "\(supportTickets.count) open")
-            }
-
-            Button {
-                showContactSupport = true
-            } label: {
-                SettingsButtonRow(title: "Contact Support", subtitle: "Reach our team")
+                SettingsButtonRow(title: "Support", subtitle: "Tickets and messages")
             }
 
             Button {
@@ -278,15 +288,12 @@ struct SettingsTab: View {
     }
 
     private func exportData() {
-        print("Export data functionality")
-    }
-
-    private func importData() {
-        print("Import data functionality")
+        guard let url = PDFExporter.export(transactions: transactions, cards: cards, user: session.user) else { return }
+        exportItem = ExportFileItem(url: url)
     }
 
     private func syncNow() {
-        print("Sync now functionality")
+        onSyncNow()
     }
 
     private func rateApp() {
@@ -424,4 +431,99 @@ private struct SettingsButtonRow: View {
                 .foregroundStyle(Palette.tertiary)
         }
     }
+}
+
+private struct ExportFileItem: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+private struct PDFExporter {
+    static func export(transactions: [Transaction], cards: [CardInfo], user: UserProfile?) -> URL? {
+        let pageWidth: CGFloat = 612
+        let pageHeight: CGFloat = 792
+        let margin: CGFloat = 50
+        let lineHeight: CGFloat = 20
+
+        let format = UIGraphicsPDFRendererFormat()
+        let pageRect = CGRect(x: 0, y: 0, width: pageWidth, height: pageHeight)
+        let renderer = UIGraphicsPDFRenderer(bounds: pageRect, format: format)
+
+        let data = renderer.pdfData { context in
+            context.beginPage()
+            var y = margin
+            let maxY = pageHeight - margin
+
+            func drawText(_ text: String, font: UIFont, color: UIColor = .black) {
+                let attributes: [NSAttributedString.Key: Any] = [
+                    .font: font,
+                    .foregroundColor: color
+                ]
+                let rect = CGRect(x: margin, y: y, width: pageWidth - 2 * margin, height: lineHeight * 2)
+                text.draw(in: rect, withAttributes: attributes)
+                y += lineHeight
+            }
+
+            let titleFont = UIFont.boldSystemFont(ofSize: 18)
+            let headingFont = UIFont.boldSystemFont(ofSize: 14)
+            let bodyFont = UIFont.systemFont(ofSize: 11)
+
+            drawText("TrackIt – Data Export", font: titleFont)
+            drawText("Generated \(Date().formatted(date: .abbreviated, time: .shortened))", font: bodyFont)
+            y += 10
+
+            if let user = user {
+                drawText("Account: \(user.firstName) \(user.lastName) (\(user.email))", font: bodyFont)
+                y += 8
+            }
+
+            y += 10
+            drawText("Summary", font: headingFont)
+            drawText("Cards: \(cards.count)  |  Transactions: \(transactions.count)", font: bodyFont)
+            y += 16
+
+            drawText("Cards", font: headingFont)
+            for card in cards.prefix(20) {
+                let bal = card.balance ?? 0
+                drawText("• \(card.nickname.isEmpty ? "Card" : card.nickname): \(bal.formatted(.currency(code: AppConstants.Currency.code)))", font: bodyFont)
+                if y > maxY { context.beginPage(); y = margin }
+            }
+            y += 12
+
+            drawText("Transactions (latest first)", font: headingFont)
+            let sorted = transactions.sorted { $0.date > $1.date }
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateStyle = .short
+            for tx in sorted.prefix(100) {
+                let kindStr = tx.kind == .income ? "+" : "-"
+                let amountStr = "\(kindStr)\(abs(tx.amount).formatted(.currency(code: AppConstants.Currency.code)))"
+                let dateStr = dateFormatter.string(from: tx.date)
+                drawText("\(dateStr)  \(tx.category)  \(amountStr)", font: bodyFont)
+                if y > maxY { context.beginPage(); y = margin }
+            }
+            if transactions.count > 100 {
+                drawText("… and \(transactions.count - 100) more transactions", font: bodyFont)
+            }
+        }
+
+        let tempDir = FileManager.default.temporaryDirectory
+        let fileName = "TrackIt_Export_\(Date().timeIntervalSince1970).pdf"
+        let fileURL = tempDir.appendingPathComponent(fileName)
+        do {
+            try data.write(to: fileURL)
+            return fileURL
+        } catch {
+            return nil
+        }
+    }
+}
+
+private struct ShareSheet: UIViewControllerRepresentable {
+    var activityItems: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

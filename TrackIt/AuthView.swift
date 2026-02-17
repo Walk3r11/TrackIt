@@ -534,8 +534,12 @@ struct AuthView: View {
             }
 
             async let chatHistoryTask = APIClient.shared.fetchChatHistory(userId: userId, token: token)
-            if let chatMessages = try? await chatHistoryTask {
+            if let chatMessages = try? await chatHistoryTask, !chatMessages.isEmpty {
+                let existing: [ChatMessage]? = SecureStore.load([ChatMessage].self, key: "currentChat")
                 await MainActor.run {
+                    if let existing = existing, existing.count >= chatMessages.count {
+                        return
+                    }
                     SecureStore.save(chatMessages, key: "currentChat")
                     log("Preloaded \(chatMessages.count) chat messages")
                 }

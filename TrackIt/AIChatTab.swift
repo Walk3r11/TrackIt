@@ -31,6 +31,7 @@ struct AIChatTab: View {
         }
         .onAppear {
             loadChatHistories()
+            restoreLastOpenChat()
         }
         .task(id: currentChatId) {
             guard !isLoading, let chatId = currentChatId else { return }
@@ -61,6 +62,7 @@ struct AIChatTab: View {
                         currentChatId = nil
                         messages = []
                         SecureStore.delete(key: "currentChat")
+                        UserDefaults.standard.removeObject(forKey: Self.currentChatIdKey)
                     }
                 } label: {
                     Image(systemName: "plus")
@@ -323,9 +325,29 @@ struct AIChatTab: View {
         }
     }
 
+    private static let currentChatIdKey = "currentChatId"
+
     private func loadChatHistories() {
         if let stored: [ChatHistory] = SecureStore.load([ChatHistory].self, key: "chatHistories") {
             chatHistories = Array(stored.sorted { $0.updatedAt > $1.updatedAt }.prefix(50))
+        }
+    }
+
+    private func restoreLastOpenChat() {
+        guard let savedIdString = UserDefaults.standard.string(forKey: Self.currentChatIdKey),
+              let savedId = UUID(uuidString: savedIdString) else { return }
+        guard let cached: [ChatMessage] = SecureStore.load([ChatMessage].self, key: "currentChat"),
+              !cached.isEmpty else { return }
+        messages = cached
+        currentChatId = savedId
+        if !chatHistories.contains(where: { $0.id == savedId }) {
+            let title = cached.first(where: { $0.role == "user" })?.content.prefix(50) ?? "New Chat"
+            let history = ChatHistory(id: savedId, title: String(title), messages: cached, updatedAt: Date())
+            chatHistories.insert(history, at: 0)
+            if chatHistories.count > 50 {
+                chatHistories = Array(chatHistories.prefix(50))
+            }
+            saveChatHistories()
         }
     }
 
@@ -422,11 +444,13 @@ struct AIChatTab: View {
         guard !messages.isEmpty, let chatId = currentChatId else {
             if currentChatId == nil {
                 SecureStore.delete(key: "currentChat")
+                UserDefaults.standard.removeObject(forKey: Self.currentChatIdKey)
             }
             return
         }
 
         SecureStore.save(messages, key: "currentChat")
+        UserDefaults.standard.set(chatId.uuidString, forKey: Self.currentChatIdKey)
 
         let title = messages.first(where: { $0.role == "user" })?.content.prefix(50) ?? "New Chat"
         let history = ChatHistory(id: chatId, title: String(title), messages: messages, updatedAt: Date())
@@ -460,6 +484,8 @@ struct AIChatTab: View {
 private struct MessageBubble: View {
     let message: ChatMessage
     let isStreaming: Bool
+    @State private var formattedText: AttributedString?
+    @State private var lastContent: String = ""
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
@@ -467,42 +493,75 @@ private struct MessageBubble: View {
                 Spacer(minLength: 60)
             }
 
-            VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 6) {
-                if message.content.contains("|") && message.content.contains("---") {
-                    TableView(content: message.content)
-                } else {
-                    Text(formatBoldText(message.content.isEmpty ? " " : message.content))
-                        .font(.appFont(size: 15))
-                        .foregroundColor(message.role == "user" ? .white : Palette.primary)
-                        .multilineTextAlignment(message.role == "user" ? .trailing : .leading)
+            if message.role == "assistant" {
+                VStack(alignment: .leading, spacing: 4) {
+                    if message.content.contains("|") && message.content.contains("---") {
+                        TableView(content: message.content)
+                    } else {
+                        Group {
+                            if let formatted = formattedText {
+                                Text(formatted)
+                            } else {
+                                Text(message.content.isEmpty ? " " : message.content)
+                            }
+                        }
+                        .font(.appFont(size: 16))
+                        .foregroundColor(Palette.primary)
+                        .multilineTextAlignment(.leading)
                         .lineLimit(nil)
                         .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .onAppear { updateFormattedText() }
+                        .onChange(of: message.content) { _, _ in updateFormattedText() }
+                    }
+                    Text(Self.timeFormatter.string(from: message.timestamp))
+                        .font(.appFont(size: 10, weight: .medium))
+                        .foregroundColor(Palette.tertiary)
                 }
-
-                Text(Self.timeFormatter.string(from: message.timestamp))
-                    .font(.appFont(size: 10, weight: .medium))
-                    .foregroundColor(Palette.tertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                VStack(alignment: .trailing, spacing: 6) {
+                    Group {
+                        if let formatted = formattedText {
+                            Text(formatted)
+                        } else {
+                            Text(message.content.isEmpty ? " " : message.content)
+                        }
+                    }
+                    .font(.appFont(size: 15))
+                    .foregroundColor(.white)
+                    .multilineTextAlignment(.trailing)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .onAppear { updateFormattedText() }
+                    .onChange(of: message.content) { _, _ in updateFormattedText() }
+                    Text(Self.timeFormatter.string(from: message.timestamp))
+                        .font(.appFont(size: 10, weight: .medium))
+                        .foregroundColor(Palette.tertiary)
+                }
+                .padding(14)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(Palette.primary)
+                )
+                .frame(maxWidth: 300, alignment: .trailing)
             }
-            .padding(14)
-            .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(message.role == "user" ? Palette.primary : Palette.card)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .stroke(Palette.stroke, lineWidth: message.role == "user" ? 0 : 1)
-                    )
-            )
-            .frame(maxWidth: 300, alignment: message.role == "user" ? .trailing : .leading)
 
             if message.role == "assistant" {
-                Spacer(minLength: 60)
+                Spacer(minLength: 0)
             }
         }
         .padding(.horizontal, LayoutMetrics.horizontalPadding)
     }
 
-    private func formatBoldText(_ text: String) -> AttributedString {
+    private func updateFormattedText() {
+        guard message.content != lastContent else { return }
+        lastContent = message.content
+        formattedText = Self.formatBoldText(message.content.isEmpty ? " " : message.content)
+    }
+
+    private static func formatBoldText(_ text: String) -> AttributedString {
         var result = AttributedString(text)
 
         let doubleBoldPattern = "\\*\\*([^*]+?)\\*\\*"
@@ -573,10 +632,9 @@ private struct MessageBubble: View {
 
 private struct TableView: View {
     let content: String
+    @State private var tableData: [[String]] = []
 
     var body: some View {
-        let tableData = parseTable(content)
-
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(tableData.enumerated()), id: \.offset) { rowIndex, row in
                 HStack(spacing: 0) {
@@ -589,14 +647,16 @@ private struct TableView: View {
                 }
             }
         }
+        .onAppear { tableData = Self.parseTable(content) }
+        .onChange(of: content) { _, new in tableData = Self.parseTable(new) }
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Palette.stroke, lineWidth: 1)
+                .stroke(Palette.strokeStrong, lineWidth: 1)
         )
     }
 
-    private func parseTable(_ text: String) -> [[String]] {
+    private static func parseTable(_ text: String) -> [[String]] {
         let lines = text.components(separatedBy: .newlines)
         var rows: [[String]] = []
 
@@ -625,24 +685,40 @@ private struct TableView: View {
 private struct TableCell: View {
     let text: String
     let isHeader: Bool
+    @State private var formattedText: AttributedString?
+    @State private var lastText: String = ""
 
     var body: some View {
-        Text(boldedText(text, baseWeight: isHeader ? .semibold : .regular, boldWeight: .bold))
-            .font(.appFont(size: 12, weight: isHeader ? .semibold : .regular))
-            .foregroundColor(Palette.primary)
-            .lineLimit(nil)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 10)
-            .padding(.vertical, isHeader ? 10 : 8)
-            .background(isHeader ? Palette.cardAlt.opacity(0.7) : Color.white.opacity(0.001))
-            .overlay(
-                Rectangle()
-                    .stroke(Palette.stroke.opacity(0.8), lineWidth: 0.5)
-            )
+        Group {
+            if let formatted = formattedText {
+                Text(formatted)
+            } else {
+                Text(text)
+            }
+        }
+        .font(.appFont(size: 12, weight: isHeader ? .semibold : .regular))
+        .foregroundColor(Palette.primary)
+        .lineLimit(nil)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+        .padding(.vertical, isHeader ? 8 : 6)
+        .background(isHeader ? Palette.cardAlt : Palette.mutedFill)
+        .overlay(
+            Rectangle()
+                .stroke(Palette.strokeStrong, lineWidth: 0.5)
+        )
+        .onAppear { updateFormattedText() }
+        .onChange(of: text) { _, _ in updateFormattedText() }
     }
 
-    private func boldedText(_ raw: String, baseWeight: Font.Weight, boldWeight: Font.Weight) -> AttributedString {
+    private func updateFormattedText() {
+        guard text != lastText else { return }
+        lastText = text
+        formattedText = Self.boldedText(text, baseWeight: isHeader ? .semibold : .regular, boldWeight: .bold)
+    }
+
+    private static func boldedText(_ raw: String, baseWeight: Font.Weight, boldWeight: Font.Weight) -> AttributedString {
         let pattern = "\\*\\*([^*]+?)\\*\\*"
         guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
             return AttributedString(raw)

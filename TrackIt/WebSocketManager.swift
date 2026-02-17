@@ -157,17 +157,6 @@ class WebSocketManager: NSObject, URLSessionWebSocketDelegate {
 
         print("[WebSocket] Connecting to: \(url.absoluteString)")
         print("[WebSocket] Stream type: \(streamType.rawValue), ticketId: \(ticketId ?? "nil")")
-
-
-        receiveMessage()
-
-
-        Task {
-            try? await Task.sleep(nanoseconds: 200_000_000)
-            await MainActor.run {
-                sendAuth()
-            }
-        }
     }
 
     func disconnect() {
@@ -229,7 +218,6 @@ class WebSocketManager: NSObject, URLSessionWebSocketDelegate {
 
     private func receiveMessage() {
         guard let task = webSocketTask, task.state == .running else {
-            print("[WebSocket] Cannot receive - task is nil or not running")
             return
         }
 
@@ -253,12 +241,13 @@ class WebSocketManager: NSObject, URLSessionWebSocketDelegate {
                     self.receiveMessage()
                 }
             case .failure(let error):
-
+                if self.webSocketTask !== task {
+                    return
+                }
                 let nsError = error as NSError
                 if nsError.code != NSURLErrorCancelled {
                     print("[WebSocket] Receive error: \(error.localizedDescription)")
                 }
-
                 if nsError.code != NSURLErrorCancelled {
                     self.handleDisconnect()
                 }
@@ -340,6 +329,8 @@ class WebSocketManager: NSObject, URLSessionWebSocketDelegate {
         isConnecting = false
         connectionSubject.send(true)
         reconnectAttempts = 0
+        sendAuth()
+        receiveMessage()
     }
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {

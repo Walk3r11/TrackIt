@@ -115,6 +115,7 @@ final class SessionManager: ObservableObject {
         sessionValidated = false
         SecureStore.delete(keys: ["userProfile", "authToken", "sessionCreatedAt", "cards", "transactions", "chatHistories", "currentChat"])
         UserDefaults.standard.removeObject(forKey: "sequenceCounter")
+        UserDefaults.standard.removeObject(forKey: "currentChatId")
         restoredFromStorage = false
         isUnlocked = false
         lastUnlockPrompt = nil

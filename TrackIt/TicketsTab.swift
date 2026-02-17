@@ -6,6 +6,7 @@ struct TicketsTab: View {
     @Binding var showNewTicket: Bool
     @State private var selectedTicket: SupportTicket?
     @EnvironmentObject private var session: SessionManager
+    var onTicketsChanged: (() -> Void)?
 
     var body: some View {
         ZStack {
@@ -38,8 +39,16 @@ struct TicketsTab: View {
             }
         }
         .sheet(item: $selectedTicket) { ticket in
-            TicketChatView(ticket: ticket)
-                .environmentObject(session)
+            TicketChatView(ticket: ticket) { newStatus in
+                if let index = tickets.firstIndex(where: { $0.id == ticket.id }) {
+                    var updatedTicket = tickets[index]
+                    updatedTicket.status = newStatus
+                    tickets[index] = updatedTicket
+                    SecureStore.save(tickets, key: "supportTickets")
+                    onTicketsChanged?()
+                }
+            }
+            .environmentObject(session)
         }
     }
 
@@ -143,8 +152,21 @@ struct TicketChatView: View {
     @State private var scrollToBottomToken = 0
     @State private var liveMessagesTask: Task<Void, Never>?
     @State private var isRefreshingMessages = false
+    @State private var ticketStatus: SupportTicket.Status
+    @State private var isClosingTicket = false
+    var onTicketStatusChanged: ((SupportTicket.Status) -> Void)?
 
     private static var persistedMessages: [String: [APIClient.TicketMessage]] = [:]
+
+    init(ticket: SupportTicket, onTicketStatusChanged: ((SupportTicket.Status) -> Void)? = nil) {
+        self.ticket = ticket
+        self.onTicketStatusChanged = onTicketStatusChanged
+        _ticketStatus = State(initialValue: ticket.status)
+    }
+    
+    private var currentTicketStatus: SupportTicket.Status {
+        ticketStatus
+    }
 
     var body: some View {
         NavigationView {
@@ -198,39 +220,52 @@ struct TicketChatView: View {
                         }
                     }
 
-                    HStack(spacing: 12) {
-                        TextField("Type a message...", text: $inputText, axis: .vertical)
-                            .textFieldStyle(.plain)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 12)
-                            .minimalSurface(cornerRadius: 18, fill: Palette.cardAlt)
-                            .foregroundColor(Palette.primary)
-                            .focused($isInputFocused)
-                            .toolbar { }
-
-                        Button {
-                            sendMessage()
-                        } label: {
-                            ZStack {
-                                if isSending {
-                                    ProgressView()
-                                        .tint(.white)
-                                } else {
-                                    Image(systemName: "arrow.up")
-                                        .font(.appFont(size: 14, weight: .semibold))
-                                        .foregroundColor(.white)
-                                }
-                            }
-                            .frame(width: 40, height: 40)
-                            .background(
-                                Circle().fill(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending ? Palette.secondary.opacity(0.3) : Palette.primary)
-                            )
+                    if ticketStatus == .closed {
+                        HStack {
+                            Spacer()
+                            Text("This ticket is closed")
+                                .font(.appFont(size: 13, weight: .semibold))
+                                .foregroundColor(Palette.secondary)
+                            Spacer()
                         }
-                        .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
+                        .padding(.vertical, 16)
+                        .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                        .background(Palette.background)
+                    } else {
+                        HStack(spacing: 12) {
+                            TextField("Type a message...", text: $inputText, axis: .vertical)
+                                .textFieldStyle(.plain)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 12)
+                                .minimalSurface(cornerRadius: 18, fill: Palette.cardAlt)
+                                .foregroundColor(Palette.primary)
+                                .focused($isInputFocused)
+                                .toolbar { }
+
+                            Button {
+                                sendMessage()
+                            } label: {
+                                ZStack {
+                                    if isSending {
+                                        ProgressView()
+                                            .tint(.white)
+                                    } else {
+                                        Image(systemName: "arrow.up")
+                                            .font(.appFont(size: 14, weight: .semibold))
+                                            .foregroundColor(.white)
+                                    }
+                                }
+                                .frame(width: 40, height: 40)
+                                .background(
+                                    Circle().fill(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending ? Palette.secondary.opacity(0.3) : Palette.primary)
+                                )
+                            }
+                            .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
+                        }
+                        .padding(.horizontal, LayoutMetrics.horizontalPadding)
+                        .padding(.vertical, 12)
+                        .background(Palette.background)
                     }
-                    .padding(.horizontal, LayoutMetrics.horizontalPadding)
-                    .padding(.vertical, 12)
-                    .background(Palette.background)
                 }
             }
             .navigationTitle(ticket.subject)
@@ -239,9 +274,27 @@ struct TicketChatView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") { dismiss() }
                 }
+                if ticketStatus != .closed {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button {
+                            closeTicket()
+                        } label: {
+                            if isClosingTicket {
+                                ProgressView()
+                                    .tint(Palette.primary)
+                            } else {
+                                Text("Close Ticket")
+                                    .font(.appFont(size: 14, weight: .semibold))
+                                    .foregroundColor(Palette.danger)
+                            }
+                        }
+                        .disabled(isClosingTicket)
+                    }
+                }
             }
             .task {
                 await loadMessages()
+                await refreshTicketStatus()
                 setupWebSocket()
                 startLiveMessagesLoop()
                 await markReadIfNeeded()
@@ -283,16 +336,18 @@ struct TicketChatView: View {
         websocketCancellable = WebSocketManager.shared.messages
             .receive(on: DispatchQueue.main)
             .sink(receiveCompletion: { _ in }, receiveValue: { message in
-                guard let data = message.data?["message"]?.value as? [String: Any],
-                      let newMessage = decodeTicketMessage(from: data) else {
-                    return
-                }
-
-                if !messages.contains(where: { $0.id == newMessage.id }) {
-                    messages.append(newMessage)
-                    persistMessages()
-                    if newMessage.senderType == "support" {
-                        Task { await markReadIfNeeded() }
+                if message.type == "status", let statusString = message.data?["status"]?.value as? String,
+                   let newStatus = SupportTicket.Status(rawValue: statusString.lowercased()) {
+                    ticketStatus = newStatus
+                    onTicketStatusChanged?(newStatus)
+                } else if let data = message.data?["message"]?.value as? [String: Any],
+                      let newMessage = decodeTicketMessage(from: data) {
+                    if !messages.contains(where: { $0.id == newMessage.id }) {
+                        messages.append(newMessage)
+                        persistMessages()
+                        if newMessage.senderType == "support" {
+                            Task { await markReadIfNeeded() }
+                        }
                     }
                 }
             })
@@ -306,27 +361,81 @@ struct TicketChatView: View {
         return message
     }
 
+    private static func storageKey(ticketId: String) -> String {
+        "ticketMessages_\(ticketId)"
+    }
+
+    static func persistMessagesLocally(ticketId: String, messages: [APIClient.TicketMessage]) {
+        persistedMessages[ticketId] = messages
+        SecureStore.save(messages, key: storageKey(ticketId: ticketId))
+    }
+
+    static func appendMessageToCache(ticketId: String, message: APIClient.TicketMessage) {
+        var list = persistedMessages[ticketId] ?? (SecureStore.load([APIClient.TicketMessage].self, key: storageKey(ticketId: ticketId)) ?? [])
+        if !list.contains(where: { $0.id == message.id }) {
+            list.append(message)
+            persistedMessages[ticketId] = list
+            SecureStore.save(list, key: storageKey(ticketId: ticketId))
+        }
+    }
+
     private func loadMessages() async {
-        if let cached = TicketChatView.persistedMessages[ticket.id.uuidString] {
-            await MainActor.run {
-                messages = cached
+        let ticketId = ticket.id.uuidString
+        
+        guard let token = session.token else {
+            if let diskCached: [APIClient.TicketMessage] = SecureStore.load([APIClient.TicketMessage].self, key: Self.storageKey(ticketId: ticketId)) {
+                await MainActor.run {
+                    messages = diskCached
+                    TicketChatView.persistedMessages[ticketId] = diskCached
+                }
+            } else if let memoryCached = TicketChatView.persistedMessages[ticketId] {
+                await MainActor.run {
+                    messages = memoryCached
+                }
             }
+            return
         }
 
-        guard let token = session.token else { return }
+        var cachedMessages: [APIClient.TicketMessage] = []
+        if let diskCached: [APIClient.TicketMessage] = SecureStore.load([APIClient.TicketMessage].self, key: Self.storageKey(ticketId: ticketId)) {
+            cachedMessages = diskCached
+        } else if let memoryCached = TicketChatView.persistedMessages[ticketId] {
+            cachedMessages = memoryCached
+        }
+        
+        if !cachedMessages.isEmpty {
+            await MainActor.run {
+                messages = cachedMessages
+                TicketChatView.persistedMessages[ticketId] = cachedMessages
+            }
+        }
 
         isLoading = true
         defer { isLoading = false }
 
         do {
-            let fetched = try await APIClient.shared.fetchTicketMessages(ticketId: ticket.id.uuidString, token: token)
+            let fetched = try await APIClient.shared.fetchTicketMessages(ticketId: ticketId, token: token)
             await MainActor.run {
-                messages = fetched
-                persistMessages()
+                if fetched.count >= messages.count {
+                    messages = fetched
+                    persistMessages()
+                } else if !messages.isEmpty {
+                    let fetchedIds = Set(fetched.map { $0.id })
+                    let existingIds = Set(messages.map { $0.id })
+                    if fetchedIds != existingIds {
+                        messages = fetched
+                        persistMessages()
+                    }
+                } else {
+                    messages = fetched
+                    persistMessages()
+                }
             }
         } catch {
             await MainActor.run {
-                errorMessage = error.localizedDescription
+                if messages.isEmpty {
+                    errorMessage = error.localizedDescription
+                }
             }
         }
     }
@@ -438,7 +547,45 @@ struct TicketChatView: View {
     }
 
     private func persistMessages() {
-        TicketChatView.persistedMessages[ticket.id.uuidString] = messages
+        let ticketId = ticket.id.uuidString
+        TicketChatView.persistedMessages[ticketId] = messages
+        SecureStore.save(messages, key: Self.storageKey(ticketId: ticketId))
+    }
+
+    private func refreshTicketStatus() async {
+        guard let token = session.token else { return }
+        do {
+            let tickets = try await APIClient.shared.fetchTickets(userId: session.user?.id ?? "", token: token)
+            if let updatedTicket = tickets.first(where: { $0.id == ticket.id }) {
+                await MainActor.run {
+                    if ticketStatus != updatedTicket.status {
+                        ticketStatus = updatedTicket.status
+                        onTicketStatusChanged?(updatedTicket.status)
+                    }
+                }
+            }
+        } catch {}
+    }
+
+    private func closeTicket() {
+        guard !isClosingTicket, let token = session.token else { return }
+        isClosingTicket = true
+
+        Task {
+            do {
+                try await APIClient.shared.closeTicket(ticketId: ticket.id.uuidString, token: token)
+                await MainActor.run {
+                    ticketStatus = .closed
+                    onTicketStatusChanged?(.closed)
+                    isClosingTicket = false
+                }
+            } catch {
+                await MainActor.run {
+                    errorMessage = "Failed to close ticket: \(error.localizedDescription)"
+                    isClosingTicket = false
+                }
+            }
+        }
     }
 }
 

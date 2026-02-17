@@ -1217,6 +1217,25 @@ struct APIClient {
         try validateHTTP(response, data: data, allowEmptyBody: true)
     }
 
+    func closeTicket(ticketId: String, token: String) async throws {
+        guard let base = baseURL else { throw APIError.invalidURL }
+        let url = base.appendingPathComponent("/api/tickets/\(ticketId)/status")
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "PATCH"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let body: [String: Any] = ["status": "closed"]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            let message = String(data: data, encoding: .utf8) ?? "Request failed"
+            throw APIError.requestFailed("Status \((response as? HTTPURLResponse)?.statusCode ?? 0): \(message)")
+        }
+    }
+
     // MARK: - Chat History
 
     func saveChatHistory(userId: String, chatId: String, messages: [ChatMessage], token: String) async throws {

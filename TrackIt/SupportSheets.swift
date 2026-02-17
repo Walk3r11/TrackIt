@@ -74,6 +74,7 @@ struct TicketsSheet: View {
     @Binding var isPresented: Bool
     @Binding var pendingTicketId: String
     @State private var selectedTicket: SupportTicket?
+    @State private var showNewTicketSheet = false
 
     var body: some View {
         NavigationView {
@@ -112,10 +113,12 @@ struct TicketsSheet: View {
                     Button("Close") { isPresented = false }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("New") { showNewTicket = true }
+                    Button("New") { 
+                        showNewTicketSheet = true
+                    }
                 }
             }
-            .sheet(isPresented: $showNewTicket) {
+            .sheet(isPresented: $showNewTicketSheet) {
                 SupportTicketSheet { subject, detail in
                     guard let userId = session.user?.id, let token = session.token else { return }
                     let ticket = SupportTicket(subject: subject, detail: detail)
@@ -138,9 +141,22 @@ struct TicketsSheet: View {
                     }
                 }
             }
+            .onChange(of: showNewTicket) { _, newValue in
+                if newValue {
+                    showNewTicketSheet = true
+                    showNewTicket = false
+                }
+            }
             .sheet(item: $selectedTicket) { ticket in
-                TicketChatView(ticket: ticket)
-                    .environmentObject(session)
+                TicketChatView(ticket: ticket) { newStatus in
+                    if let index = tickets.firstIndex(where: { $0.id == ticket.id }) {
+                        var updatedTicket = tickets[index]
+                        updatedTicket.status = newStatus
+                        tickets[index] = updatedTicket
+                        SecureStore.save(tickets, key: "supportTickets")
+                    }
+                }
+                .environmentObject(session)
             }
         }
     }
@@ -353,10 +369,14 @@ struct HelpCenterSheet: View {
                         Text("Help Center")
                             .font(.appFont(size: 18, weight: .semibold))
 
-                        HelpItem(title: "Track transactions", detail: "Use the + button on Home to add income or expenses.")
-                        HelpItem(title: "Manage cards", detail: "Add cards to track balances and limits.")
-                        HelpItem(title: "Insights", detail: "Switch tabs to see charts, trends, and patterns.")
-                        HelpItem(title: "Security", detail: "Enable Face ID to lock card details.")
+                        HelpItem(title: "Track transactions", detail: "Use the + button on Home to add income or expenses. You can assign a category and card.")
+                        HelpItem(title: "Manage cards", detail: "Add cards to track balances and set daily, weekly, or monthly spending limits. Tap Cards on Home or add from the quick actions.")
+                        HelpItem(title: "Insights", detail: "Switch to the Insights tab to see charts, spending patterns, trends, and comparisons.")
+                        HelpItem(title: "Security", detail: "In Settings, enable \"Require Face ID for cards\" to lock card details until you authenticate.")
+                        HelpItem(title: "Export data", detail: "In Settings under Data & Sync, tap Export Data to save your transactions and cards as a PDF to Files.")
+                        HelpItem(title: "Sync", detail: "Tap Sync Now in Settings to refresh all data from the server. Data also syncs when you open the app.")
+                        HelpItem(title: "Support", detail: "Open Support in Settings to view your tickets and messages, or create a new request. We reply in the app.")
+                        HelpItem(title: "Categories", detail: "Categories are created automatically when you add transactions. You can clear all in Settings if you start over.")
                     }
                     .padding(20)
                 }
