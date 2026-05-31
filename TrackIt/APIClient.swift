@@ -39,7 +39,7 @@ struct APIClient {
         if let override = ProcessInfo.processInfo.environment["API_BASE_URL"], let url = URL(string: override) {
             return url
         }
-        return URL(string: "https://trackit-dashboard-beryl.vercel.app")
+        return URL(string: "https://backend-production-0eac.up.railway.app")
     }
 
     private func validateHTTP(_ response: URLResponse, data: Data, allowEmptyBody: Bool = false) throws {
