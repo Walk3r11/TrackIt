@@ -5,22 +5,12 @@ import LocalAuthentication
 
 struct UserProfile: Codable, Equatable {
     let id: String
-    let sequenceId: String?
     let firstName: String
     let lastName: String
     let email: String
     let balance: Double?
     let monthlySpend: Double?
     let lastActive: String?
-}
-
-enum SequenceGenerator {
-    static func next() -> String {
-        let current = UserDefaults.standard.integer(forKey: "sequenceCounter")
-        let next = current + 1
-        UserDefaults.standard.set(next, forKey: "sequenceCounter")
-        return String(format: "T-%06d", next)
-    }
 }
 
 @MainActor
@@ -114,7 +104,6 @@ final class SessionManager: ObservableObject {
         sessionCreatedAt = nil
         sessionValidated = false
         SecureStore.delete(keys: ["userProfile", "authToken", "sessionCreatedAt", "cards", "transactions", "chatHistories", "currentChat"])
-        UserDefaults.standard.removeObject(forKey: "sequenceCounter")
         UserDefaults.standard.removeObject(forKey: "currentChatId")
         restoredFromStorage = false
         isUnlocked = false

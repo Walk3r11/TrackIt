@@ -111,7 +111,6 @@ private func checkAndCleanOnFirstLaunch() {
         print("✅ Cleared \(secureStoreKeys.count) SecureStore (Keychain) keys")
 
         let userDefaultsKeys = [
-            "sequenceCounter",
             "showSavingsCard",
             "savingsGoalAmount",
             "savingsSavedAmount",

@@ -379,24 +379,8 @@ struct AuthView: View {
                     "password": password
                 ])
             }
-            let resolvedSequence: String
-            if let seq = auth.user.sequenceId, !seq.isEmpty {
-                resolvedSequence = seq
-            } else {
-                resolvedSequence = SequenceGenerator.next()
-            }
-            let profile = UserProfile(
-                id: auth.user.id,
-                sequenceId: resolvedSequence,
-                firstName: auth.user.firstName,
-                lastName: auth.user.lastName,
-                email: auth.user.email,
-                balance: auth.user.balance,
-                monthlySpend: auth.user.monthlySpend,
-                lastActive: auth.user.lastActive
-            )
             await MainActor.run {
-                session.setSession(user: profile, token: auth.token)
+                session.setSession(user: auth.user, token: auth.token)
                 pendingAuth = nil
             }
             log("Login completed for \(maskedEmail(cleanEmail))")
