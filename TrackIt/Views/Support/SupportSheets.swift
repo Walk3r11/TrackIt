@@ -113,7 +113,7 @@ struct TicketsSheet: View {
                     Button("Close") { isPresented = false }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("New") { 
+                    Button("New") {
                         showNewTicketSheet = true
                     }
                 }

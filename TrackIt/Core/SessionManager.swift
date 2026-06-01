@@ -1,7 +1,6 @@
 import Foundation
 import Combine
 import SwiftUI
-import LocalAuthentication
 
 struct UserProfile: Codable, Equatable {
     let id: String
@@ -18,11 +17,6 @@ final class SessionManager: ObservableObject {
     @Published var user: UserProfile?
     @Published var token: String?
     @Published var sessionValidated = false
-    @Published var verifying = false
-    @Published var restoredFromStorage = false
-    @Published var isUnlocked = false
-    @Published var unlocking = false
-    private var lastUnlockPrompt: Date?
     private var sessionCreatedAt: Date?
     private let sessionDuration: TimeInterval = 60 * 60 * 24 * 60
 
@@ -31,9 +25,7 @@ final class SessionManager: ObservableObject {
     init() {
         user = nil
         token = nil
-        restoredFromStorage = false
         sessionValidated = false
-        isUnlocked = false
         restoreSessionFromStorage()
     }
 
@@ -74,7 +66,6 @@ final class SessionManager: ObservableObject {
                 self.token = storedToken
                 self.sessionCreatedAt = storedDate
                 self.sessionValidated = false
-                self.restoredFromStorage = true
             } else {
                 print("⚠️ Session expired (stored: \(storedDate), now: \(now))")
                 SecureStore.delete(keys: ["userProfile", "authToken", "sessionCreatedAt"])
@@ -86,10 +77,7 @@ final class SessionManager: ObservableObject {
         self.user = user
         self.token = token
         self.sessionCreatedAt = Date()
-        restoredFromStorage = false
         sessionValidated = true
-        isUnlocked = false
-        lastUnlockPrompt = nil
 
         SecureStore.save(user, key: "userProfile")
         SecureStore.save(token, key: "authToken")
@@ -105,47 +93,5 @@ final class SessionManager: ObservableObject {
         sessionValidated = false
         SecureStore.delete(keys: ["userProfile", "authToken", "sessionCreatedAt", "cards", "transactions", "chatHistories", "currentChat"])
         UserDefaults.standard.removeObject(forKey: "currentChatId")
-        restoredFromStorage = false
-        isUnlocked = false
-        lastUnlockPrompt = nil
-    }
-
-    func markLocked() {
-        isUnlocked = false
-        unlocking = false
-    }
-
-    func shouldPromptUnlock() -> Bool {
-        if isUnlocked { return false }
-        let now = Date()
-        if let last = lastUnlockPrompt, now.timeIntervalSince(last) < 10 {
-            return false
-        }
-        return true
-    }
-
-    func unlockWithBiometrics() async -> Bool {
-        if unlocking { return false }
-        if isUnlocked { return true }
-        unlocking = true
-        defer { unlocking = false }
-        lastUnlockPrompt = Date()
-        let context = LAContext()
-        var error: NSError?
-        let reason = "Authenticate to access TrackIt"
-        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
-            isUnlocked = true
-            lastUnlockPrompt = Date()
-            return true
-        }
-        do {
-            let success = try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
-            if success { isUnlocked = true }
-            lastUnlockPrompt = Date()
-            return success
-        } catch {
-            lastUnlockPrompt = Date()
-            return false
-        }
     }
 }

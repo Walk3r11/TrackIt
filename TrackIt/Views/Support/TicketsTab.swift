@@ -163,7 +163,7 @@ struct TicketChatView: View {
         self.onTicketStatusChanged = onTicketStatusChanged
         _ticketStatus = State(initialValue: ticket.status)
     }
-    
+
     private var currentTicketStatus: SupportTicket.Status {
         ticketStatus
     }
@@ -381,7 +381,7 @@ struct TicketChatView: View {
 
     private func loadMessages() async {
         let ticketId = ticket.id.uuidString
-        
+
         guard let token = session.token else {
             if let diskCached: [APIClient.TicketMessage] = SecureStore.load([APIClient.TicketMessage].self, key: Self.storageKey(ticketId: ticketId)) {
                 await MainActor.run {
@@ -402,7 +402,7 @@ struct TicketChatView: View {
         } else if let memoryCached = TicketChatView.persistedMessages[ticketId] {
             cachedMessages = memoryCached
         }
-        
+
         if !cachedMessages.isEmpty {
             await MainActor.run {
                 messages = cachedMessages
