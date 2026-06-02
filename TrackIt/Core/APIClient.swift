@@ -198,25 +198,6 @@ struct APIClient {
         )
     }
 
-    func fetchUser(byEmail email: String) async throws -> UserProfile? {
-        guard let base = baseURL else { throw APIError.invalidURL }
-        let url = base.appendingPathComponent("/api/users/lookup")
-        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        components?.queryItems = [URLQueryItem(name: "query", value: email)]
-        guard let finalURL = components?.url else { throw APIError.invalidURL }
-
-        let (data, response) = try await URLSession.shared.data(from: finalURL)
-        guard let http = response as? HTTPURLResponse else { throw APIError.requestFailed("No HTTP response") }
-        if http.statusCode == 200 {
-            struct LookupResponse: Decodable { let user: UserProfile? }
-            let decoded = try? JSONDecoder().decode(LookupResponse.self, from: data)
-            return decoded?.user
-        }
-        if http.statusCode == 404 { return nil }
-        let message = String(data: data, encoding: .utf8) ?? "Request failed"
-        throw APIError.requestFailed("Status \(http.statusCode): \(message)")
-    }
-
     func validateSession(token: String) async throws -> UserProfile {
         guard let base = baseURL else { throw APIError.invalidURL }
         let url = base.appendingPathComponent("/api/auth/session")
