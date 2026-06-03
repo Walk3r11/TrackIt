@@ -67,6 +67,6 @@ enum AppConstants: Sendable {
 
     enum Refresh: Sendable {
         static let fullRefreshNanoseconds: UInt64 = 30_000_000_000
-        static let ticketMessagesNanoseconds: UInt64 = 10_000_000_000
+        static let ticketMessagesNanoseconds: UInt64 = 3_000_000_000
     }
 }

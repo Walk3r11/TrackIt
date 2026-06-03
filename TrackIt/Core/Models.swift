@@ -97,13 +97,13 @@ struct SupportTicket: Identifiable, Codable, Hashable {
     var subject: String
     var detail: String
     var status: Status = .open
+}
 
-    func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-    }
-
-    static func == (lhs: SupportTicket, rhs: SupportTicket) -> Bool {
-        lhs.id == rhs.id
+extension Array where Element == SupportTicket {
+    mutating func updateTicketStatus(id: UUID, to status: SupportTicket.Status) -> Bool {
+        guard let index = firstIndex(where: { $0.id == id }) else { return false }
+        self[index].status = status
+        return true
     }
 }
 

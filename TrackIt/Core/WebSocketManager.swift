@@ -128,7 +128,7 @@ class WebSocketManager: NSObject, URLSessionWebSocketDelegate {
         self.userId = userId
         self.supportUserId = supportUserId
         self.streamType = streamType
-        self.ticketId = ticketId
+        self.ticketId = ticketId?.lowercased()
         self.currentUserId = userId
         self.currentStreamType = streamType
 
@@ -279,7 +279,9 @@ class WebSocketManager: NSObject, URLSessionWebSocketDelegate {
             sendJSON(["type": "pong"])
         } else if type == "error", let error = json["error"] as? String {
             print("[WebSocket] Error from server: \(error)")
-            messageSubject.send(completion: .failure(NSError(domain: "WebSocket", code: -1, userInfo: [NSLocalizedDescriptionKey: error])))
+            if error != "Ticket not found" && error != "Invalid ticket id" && error != "Forbidden" {
+                messageSubject.send(completion: .failure(NSError(domain: "WebSocket", code: -1, userInfo: [NSLocalizedDescriptionKey: error])))
+            }
         } else {
             var messageData: [String: AnyCodable] = [:]
             if let data = json["data"] as? [String: Any] {

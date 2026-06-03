@@ -122,20 +122,46 @@ struct TicketsSheet: View {
                 SupportTicketSheet { subject, detail in
                     guard let userId = session.user?.id, let token = session.token else { return }
                     let ticket = SupportTicket(subject: subject, detail: detail)
-                    let ticketId = ticket.id
+                    let localId = ticket.id
                     tickets.insert(ticket, at: 0)
+                    TicketChatView.seedInitialUserMessage(
+                        ticketId: ticket.id.apiString,
+                        userId: userId,
+                        content: detail
+                    )
 
                     Task {
                         do {
-                            try await APIClient.shared.createTicket(
+                            let created = try await APIClient.shared.createTicket(
                                 userId: userId,
                                 subject: subject,
                                 initialMessage: detail,
                                 token: token
                             )
+                            let serverId = created.ticketId
+                            let messages = try await APIClient.shared.fetchTicketMessages(
+                                ticketId: serverId.apiString,
+                                token: token
+                            )
+                            await MainActor.run {
+                                if let index = tickets.firstIndex(where: { $0.id == localId }) {
+                                    var synced = tickets[index]
+                                    synced.id = serverId
+                                    tickets[index] = synced
+                                    if selectedTicket?.id == localId {
+                                        selectedTicket = synced
+                                    }
+                                }
+                                if pendingTicketId == localId.apiString {
+                                    pendingTicketId = serverId.apiString
+                                }
+                                TicketChatView.migrateMessageCache(from: localId.apiString, to: serverId.apiString)
+                                TicketChatView.persistMessagesLocally(ticketId: serverId.apiString, messages: messages)
+                                SecureStore.save(tickets, key: "supportTickets")
+                            }
                         } catch {
                             await MainActor.run {
-                                tickets.removeAll { $0.id == ticketId }
+                                tickets.removeAll { $0.id == localId }
                             }
                         }
                     }
@@ -148,17 +174,48 @@ struct TicketsSheet: View {
                 }
             }
             .sheet(item: $selectedTicket) { ticket in
-                TicketChatView(ticket: ticket) { newStatus in
-                    if let index = tickets.firstIndex(where: { $0.id == ticket.id }) {
-                        var updatedTicket = tickets[index]
-                        updatedTicket.status = newStatus
-                        tickets[index] = updatedTicket
-                        SecureStore.save(tickets, key: "supportTickets")
-                    }
+                TicketChatView(ticket: ticketBinding(for: ticket))
+                    .environmentObject(session)
+            }
+            .onChange(of: isPresented) { _, isOpen in
+                if isOpen {
+                    Task { await syncTicketStatusesFromServer() }
                 }
-                .environmentObject(session)
+            }
+            .onAppear {
+                Task { await syncTicketStatusesFromServer() }
             }
         }
+    }
+
+    private func ticketBinding(for ticket: SupportTicket) -> Binding<SupportTicket> {
+        Binding(
+            get: {
+                tickets.first(where: { $0.id == ticket.id }) ?? ticket
+            },
+            set: { newValue in
+                if let index = tickets.firstIndex(where: { $0.id == newValue.id }) {
+                    tickets[index] = newValue
+                }
+                if selectedTicket?.id == newValue.id {
+                    selectedTicket = newValue
+                }
+                SecureStore.save(tickets, key: "supportTickets")
+            }
+        )
+    }
+
+    private func syncTicketStatusesFromServer() async {
+        guard let userId = session.user?.id, let token = session.token else { return }
+        do {
+            let remote = try await APIClient.shared.fetchTickets(userId: userId, token: token)
+            await MainActor.run {
+                for serverTicket in remote {
+                    _ = tickets.updateTicketStatus(id: serverTicket.id, to: serverTicket.status)
+                }
+                SecureStore.save(tickets, key: "supportTickets")
+            }
+        } catch {}
     }
 }
 
@@ -245,7 +302,7 @@ struct ContactSupportSheet: View {
 
         Task {
             do {
-                try await APIClient.shared.createTicket(
+                _ = try await APIClient.shared.createTicket(
                     userId: userId,
                     subject: subjectText,
                     initialMessage: detailText,

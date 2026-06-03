@@ -124,14 +124,13 @@ struct APIClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
-        let body: [String: Any]
+        var body: [String: Any] = [
+            "email": email,
+            "password": password
+        ]
         if mode == .signup {
-            body = [
-                "firstName": payload["firstName"] ?? "",
-                "lastName": payload["lastName"] ?? ""
-            ]
-        } else {
-            body = [:]
+            body["firstName"] = payload["firstName"] ?? ""
+            body["lastName"] = payload["lastName"] ?? ""
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
 
@@ -911,7 +910,11 @@ struct APIClient {
         let content: String?
     }
 
-    func createTicket(userId: String, subject: String, initialMessage: String, token: String) async throws {
+    struct CreateTicketResult {
+        let ticketId: UUID
+    }
+
+    func createTicket(userId: String, subject: String, initialMessage: String, token: String) async throws -> CreateTicketResult {
         guard let base = baseURL else { throw APIError.invalidURL }
         let url = base.appendingPathComponent("/api/tickets")
         var request = URLRequest(url: url)
@@ -934,14 +937,29 @@ struct APIClient {
                 if let responseString = String(data: data, encoding: .utf8),
                    let jsonData = responseString.data(using: .utf8),
                    let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-                   let ticketId = json["ticketId"] as? String, !ticketId.isEmpty {
+                   let ticketId = json["ticketId"] as? String, !ticketId.isEmpty,
+                   let uuid = UUID(uuidString: ticketId) {
                     print("[APIClient] ✅ Ticket created successfully (ticketId: \(ticketId)) despite 500 response")
-                    return
+                    return CreateTicketResult(ticketId: uuid)
                 }
             }
         }
 
-        try validateHTTP(response, data: data, allowEmptyBody: true)
+        try validateHTTP(response, data: data, allowEmptyBody: false)
+
+        struct CreateTicketResponse: Decodable {
+            let ticketId: String
+        }
+        if let decoded = try? JSONDecoder().decode(CreateTicketResponse.self, from: data),
+           let uuid = UUID(uuidString: decoded.ticketId) {
+            return CreateTicketResult(ticketId: uuid)
+        }
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let ticketId = json["ticketId"] as? String,
+           let uuid = UUID(uuidString: ticketId) {
+            return CreateTicketResult(ticketId: uuid)
+        }
+        throw APIError.decodingFailed
     }
 
     func fetchTickets(userId: String, token: String? = nil) async throws -> [SupportTicket] {

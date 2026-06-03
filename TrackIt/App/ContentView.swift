@@ -241,21 +241,41 @@ private func applyRootModifiers<Content: View>(to content: Content) -> some View
         SupportTicketSheet { subject, detail in
             guard let userId = session.user?.id, let token = session.token else { return }
             let ticket = SupportTicket(subject: subject, detail: detail)
-            let ticketId = ticket.id
+            let localId = ticket.id
             supportTickets.insert(ticket, at: 0)
+            TicketChatView.seedInitialUserMessage(
+                ticketId: ticket.id.apiString,
+                userId: userId,
+                content: detail
+            )
 
             Task {
                 do {
-                    try await APIClient.shared.createTicket(
+                    let created = try await APIClient.shared.createTicket(
                         userId: userId,
                         subject: subject,
                         initialMessage: detail,
                         token: token
                     )
+                    let serverId = created.ticketId
+                    let messages = try await APIClient.shared.fetchTicketMessages(
+                        ticketId: serverId.apiString,
+                        token: token
+                    )
+                    await MainActor.run {
+                        if let index = supportTickets.firstIndex(where: { $0.id == localId }) {
+                            var synced = supportTickets[index]
+                            synced.id = serverId
+                            supportTickets[index] = synced
+                        }
+                        TicketChatView.migrateMessageCache(from: localId.apiString, to: serverId.apiString)
+                        TicketChatView.persistMessagesLocally(ticketId: serverId.apiString, messages: messages)
+                        saveTickets()
+                    }
                     print("✅ Ticket created successfully")
                 } catch {
                     await MainActor.run {
-                        supportTickets.removeAll { $0.id == ticketId }
+                        supportTickets.removeAll { $0.id == localId }
                         print("❌ Failed to create ticket: \(error.localizedDescription)")
                     }
                 }
@@ -1219,6 +1239,15 @@ private func applyRootModifiers<Content: View>(to content: Content) -> some View
     }
 
     private func handleWebSocketMessage(_ message: WebSocketMessage) {
+        if message.type == "ticket", let data = message.data,
+           let ticketId = data["id"]?.value as? String,
+           let statusString = data["status"]?.value as? String,
+           let status = SupportTicket.Status(rawValue: statusString.lowercased()),
+           let uuid = UUID(uuidString: ticketId) {
+            applySupportTicketStatus(ticketId: uuid, status: status)
+            return
+        }
+
         guard let data = message.data else { return }
 
 
@@ -1306,20 +1335,27 @@ private func applyRootModifiers<Content: View>(to content: Content) -> some View
         return try? JSONDecoder().decode(APIClient.TicketMessage.self, from: jsonData)
     }
 
+    @MainActor
+    private func applySupportTicketStatus(ticketId: UUID, status: SupportTicket.Status) {
+        if supportTickets.updateTicketStatus(id: ticketId, to: status) {
+            saveTickets()
+        }
+    }
+
     private func preloadTicketMessages(token: String, tickets: [SupportTicket]) async {
         for ticket in tickets {
             guard !Task.isCancelled else { return }
             do {
-                let messages = try await APIClient.shared.fetchTicketMessages(ticketId: ticket.id.uuidString, token: token)
+                let messages = try await APIClient.shared.fetchTicketMessages(ticketId: ticket.id.apiString, token: token)
                 await MainActor.run {
-                    TicketChatView.persistMessagesLocally(ticketId: ticket.id.uuidString, messages: messages)
+                    TicketChatView.persistMessagesLocally(ticketId: ticket.id.apiString, messages: messages)
                 }
             } catch {}
         }
     }
 
     private func scheduleLocalSupportNotification(for message: APIClient.TicketMessage) {
-        if activeTicketId == message.ticketId {
+        if activeTicketId.lowercased() == message.ticketId.lowercased() {
             return
         }
         if message.readByUserAt != nil {

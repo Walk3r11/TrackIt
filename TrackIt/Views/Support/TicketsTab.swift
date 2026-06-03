@@ -39,17 +39,43 @@ struct TicketsTab: View {
             }
         }
         .sheet(item: $selectedTicket) { ticket in
-            TicketChatView(ticket: ticket) { newStatus in
-                if let index = tickets.firstIndex(where: { $0.id == ticket.id }) {
-                    var updatedTicket = tickets[index]
-                    updatedTicket.status = newStatus
-                    tickets[index] = updatedTicket
-                    SecureStore.save(tickets, key: "supportTickets")
-                    onTicketsChanged?()
-                }
-            }
+            TicketChatView(ticket: ticketBinding(for: ticket))
             .environmentObject(session)
         }
+        .onAppear {
+            Task { await syncTicketStatusesFromServer() }
+        }
+    }
+
+    private func ticketBinding(for ticket: SupportTicket) -> Binding<SupportTicket> {
+        Binding(
+            get: {
+                tickets.first(where: { $0.id == ticket.id }) ?? ticket
+            },
+            set: { newValue in
+                if let index = tickets.firstIndex(where: { $0.id == newValue.id }) {
+                    tickets[index] = newValue
+                }
+                if selectedTicket?.id == newValue.id {
+                    selectedTicket = newValue
+                }
+                SecureStore.save(tickets, key: "supportTickets")
+                onTicketsChanged?()
+            }
+        )
+    }
+
+    private func syncTicketStatusesFromServer() async {
+        guard let userId = session.user?.id, let token = session.token else { return }
+        do {
+            let remote = try await APIClient.shared.fetchTickets(userId: userId, token: token)
+            await MainActor.run {
+                for serverTicket in remote {
+                    _ = tickets.updateTicketStatus(id: serverTicket.id, to: serverTicket.status)
+                }
+                SecureStore.save(tickets, key: "supportTickets")
+            }
+        } catch {}
     }
 
     private var header: some View {
@@ -136,7 +162,7 @@ private struct TicketRow: View {
 }
 
 struct TicketChatView: View {
-    let ticket: SupportTicket
+    @Binding var ticket: SupportTicket
     @EnvironmentObject private var session: SessionManager
     @Environment(\.dismiss) private var dismiss
     @State private var messages: [APIClient.TicketMessage] = []
@@ -152,21 +178,9 @@ struct TicketChatView: View {
     @State private var scrollToBottomToken = 0
     @State private var liveMessagesTask: Task<Void, Never>?
     @State private var isRefreshingMessages = false
-    @State private var ticketStatus: SupportTicket.Status
     @State private var isClosingTicket = false
-    var onTicketStatusChanged: ((SupportTicket.Status) -> Void)?
 
     private static var persistedMessages: [String: [APIClient.TicketMessage]] = [:]
-
-    init(ticket: SupportTicket, onTicketStatusChanged: ((SupportTicket.Status) -> Void)? = nil) {
-        self.ticket = ticket
-        self.onTicketStatusChanged = onTicketStatusChanged
-        _ticketStatus = State(initialValue: ticket.status)
-    }
-
-    private var currentTicketStatus: SupportTicket.Status {
-        ticketStatus
-    }
 
     var body: some View {
         NavigationView {
@@ -190,7 +204,7 @@ struct TicketChatView: View {
                                     .padding(.vertical, 40)
                                 }
 
-                                ForEach(Array(messages.enumerated()), id: \.offset) { _, message in
+                                ForEach(messages) { message in
                                     TicketChatBubble(message: message, isUser: message.senderType == "user")
                                         .id(message.id)
                                 }
@@ -220,7 +234,7 @@ struct TicketChatView: View {
                         }
                     }
 
-                    if ticketStatus == .closed {
+                    if ticket.status == .closed {
                         HStack {
                             Spacer()
                             Text("This ticket is closed")
@@ -274,7 +288,7 @@ struct TicketChatView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") { dismiss() }
                 }
-                if ticketStatus != .closed {
+                if ticket.status != .closed {
                     ToolbarItem(placement: .confirmationAction) {
                         Button {
                             closeTicket()
@@ -293,8 +307,8 @@ struct TicketChatView: View {
                 }
             }
             .task {
-                await loadMessages()
                 await refreshTicketStatus()
+                await loadMessages()
                 setupWebSocket()
                 startLiveMessagesLoop()
                 await markReadIfNeeded()
@@ -307,12 +321,12 @@ struct TicketChatView: View {
                 websocketCancellable?.cancel()
                 websocketCancellable = nil
                 stopLiveMessagesLoop()
-                if activeTicketId == ticket.id.uuidString {
+                if activeTicketId == ticket.id.apiString {
                     activeTicketId = ""
                 }
             }
             .onAppear {
-                activeTicketId = ticket.id.uuidString
+                activeTicketId = ticket.id.apiString
             }
         }
     }
@@ -330,24 +344,22 @@ struct TicketChatView: View {
             userId: userId,
             supportUserId: nil,
             streamType: .ticketMessages,
-            ticketId: ticket.id.uuidString
+            ticketId: ticket.id.apiString
         )
 
         websocketCancellable = WebSocketManager.shared.messages
             .receive(on: DispatchQueue.main)
             .sink(receiveCompletion: { _ in }, receiveValue: { message in
                 if message.type == "status", let statusString = message.data?["status"]?.value as? String,
-                   let newStatus = SupportTicket.Status(rawValue: statusString.lowercased()) {
-                    ticketStatus = newStatus
-                    onTicketStatusChanged?(newStatus)
+                   let newStatus = SupportTicket.Status(rawValue: statusString.lowercased()),
+                   ticket.status != newStatus {
+                    var updated = ticket
+                    updated.status = newStatus
+                    ticket = updated
                 } else if let data = message.data?["message"]?.value as? [String: Any],
                       let newMessage = decodeTicketMessage(from: data) {
-                    if !messages.contains(where: { $0.id == newMessage.id }) {
-                        messages.append(newMessage)
-                        persistMessages()
-                        if newMessage.senderType == "support" {
-                            Task { await markReadIfNeeded() }
-                        }
+                    if appendMessage(newMessage), newMessage.senderType == "support" {
+                        Task { await markReadIfNeeded() }
                     }
                 }
             })
@@ -379,8 +391,49 @@ struct TicketChatView: View {
         }
     }
 
+    static func migrateMessageCache(from oldTicketId: String, to newTicketId: String) {
+        let old = oldTicketId.lowercased()
+        let new = newTicketId.lowercased()
+        guard old != new else { return }
+        var cached = persistedMessages[old]
+            ?? (SecureStore.load([APIClient.TicketMessage].self, key: storageKey(ticketId: old)) ?? [])
+        guard !cached.isEmpty else { return }
+        cached = cached.map {
+            APIClient.TicketMessage(
+                id: $0.id,
+                ticketId: new,
+                userId: $0.userId,
+                senderType: $0.senderType,
+                content: $0.content,
+                createdAt: $0.createdAt,
+                readByUserAt: $0.readByUserAt,
+                readBySupportAt: $0.readBySupportAt
+            )
+        }
+        persistMessagesLocally(ticketId: new, messages: cached)
+        persistedMessages.removeValue(forKey: old)
+    }
+
+    static func seedInitialUserMessage(ticketId: String, userId: String, content: String) {
+        let id = ticketId.lowercased()
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let now = formatter.string(from: Date())
+        let message = APIClient.TicketMessage(
+            id: UUID().uuidString.lowercased(),
+            ticketId: id,
+            userId: userId,
+            senderType: "user",
+            content: content,
+            createdAt: now,
+            readByUserAt: now,
+            readBySupportAt: nil
+        )
+        persistMessagesLocally(ticketId: id, messages: [message])
+    }
+
     private func loadMessages() async {
-        let ticketId = ticket.id.uuidString
+        let ticketId = ticket.id.apiString
 
         guard let token = session.token else {
             if let diskCached: [APIClient.TicketMessage] = SecureStore.load([APIClient.TicketMessage].self, key: Self.storageKey(ticketId: ticketId)) {
@@ -417,18 +470,15 @@ struct TicketChatView: View {
             let fetched = try await APIClient.shared.fetchTicketMessages(ticketId: ticketId, token: token)
             await MainActor.run {
                 if fetched.count >= messages.count {
-                    messages = fetched
-                    persistMessages()
+                    setMessages(fetched)
                 } else if !messages.isEmpty {
                     let fetchedIds = Set(fetched.map { $0.id })
                     let existingIds = Set(messages.map { $0.id })
                     if fetchedIds != existingIds {
-                        messages = fetched
-                        persistMessages()
+                        setMessages(fetched)
                     }
                 } else {
-                    messages = fetched
-                    persistMessages()
+                    setMessages(fetched)
                 }
             }
         } catch {
@@ -465,11 +515,10 @@ struct TicketChatView: View {
         guard shouldRefresh else { return }
 
         do {
-            let fetched = try await APIClient.shared.fetchTicketMessages(ticketId: ticket.id.uuidString, token: token)
+            let fetched = try await APIClient.shared.fetchTicketMessages(ticketId: ticket.id.apiString, token: token)
             await MainActor.run {
                 if shouldReplaceMessages(with: fetched) {
-                    messages = fetched
-                    persistMessages()
+                    setMessages(fetched)
                 }
                 isRefreshingMessages = false
             }
@@ -500,7 +549,7 @@ struct TicketChatView: View {
         guard let token = session.token else { return }
         do {
             try await APIClient.shared.markTicketMessagesRead(
-                ticketId: ticket.id.uuidString,
+                ticketId: ticket.id.apiString,
                 reader: "user",
                 token: token
             )
@@ -527,14 +576,13 @@ struct TicketChatView: View {
         Task {
             do {
                 let newMessage = try await APIClient.shared.sendTicketMessage(
-                    ticketId: ticket.id.uuidString,
+                    ticketId: ticket.id.apiString,
                     content: trimmed,
                     token: token
                 )
 
                 await MainActor.run {
-                    messages.append(newMessage)
-                    persistMessages()
+                    appendMessage(newMessage)
                     isSending = false
                 }
             } catch {
@@ -546,8 +594,26 @@ struct TicketChatView: View {
         }
     }
 
+    private func uniqueMessages(_ list: [APIClient.TicketMessage]) -> [APIClient.TicketMessage] {
+        var seen = Set<String>()
+        return list.filter { seen.insert($0.id).inserted }
+    }
+
+    private func setMessages(_ list: [APIClient.TicketMessage]) {
+        messages = uniqueMessages(list)
+        persistMessages()
+    }
+
+    @discardableResult
+    private func appendMessage(_ message: APIClient.TicketMessage) -> Bool {
+        guard !messages.contains(where: { $0.id == message.id }) else { return false }
+        messages.append(message)
+        persistMessages()
+        return true
+    }
+
     private func persistMessages() {
-        let ticketId = ticket.id.uuidString
+        let ticketId = ticket.id.apiString
         TicketChatView.persistedMessages[ticketId] = messages
         SecureStore.save(messages, key: Self.storageKey(ticketId: ticketId))
     }
@@ -558,9 +624,10 @@ struct TicketChatView: View {
             let tickets = try await APIClient.shared.fetchTickets(userId: session.user?.id ?? "", token: token)
             if let updatedTicket = tickets.first(where: { $0.id == ticket.id }) {
                 await MainActor.run {
-                    if ticketStatus != updatedTicket.status {
-                        ticketStatus = updatedTicket.status
-                        onTicketStatusChanged?(updatedTicket.status)
+                    if ticket.status != updatedTicket.status {
+                        var updated = ticket
+                        updated.status = updatedTicket.status
+                        ticket = updated
                     }
                 }
             }
@@ -573,10 +640,11 @@ struct TicketChatView: View {
 
         Task {
             do {
-                try await APIClient.shared.closeTicket(ticketId: ticket.id.uuidString, token: token)
+                try await APIClient.shared.closeTicket(ticketId: ticket.id.apiString, token: token)
                 await MainActor.run {
-                    ticketStatus = .closed
-                    onTicketStatusChanged?(.closed)
+                    var updated = ticket
+                    updated.status = .closed
+                    ticket = updated
                     isClosingTicket = false
                 }
             } catch {
