@@ -1,0 +1,1382 @@
+import SwiftUI
+import LocalAuthentication
+import Combine
+import UserNotifications
+#if canImport(UIKit)
+import UIKit
+#endif
+
+enum LayoutMetrics {
+    static let maxContentWidth: CGFloat = 420
+    static let horizontalPadding: CGFloat = 16
+}
+
+private enum DashboardPersistence {
+    static let totalIncomeKey = "dashboardTotalIncome"
+    static let totalExpensesKey = "dashboardTotalExpenses"
+    static let lifetimeIncomeKey = "dashboardLifetimeIncome"
+    static let lifetimeExpensesKey = "dashboardLifetimeExpenses"
+
+    static func loadTotalIncome() -> Double {
+        (UserDefaults.standard.object(forKey: totalIncomeKey) as? Double) ?? 0
+    }
+    static func loadTotalExpenses() -> Double {
+        (UserDefaults.standard.object(forKey: totalExpensesKey) as? Double) ?? 0
+    }
+    static func loadLifetimeIncome() -> Double {
+        (UserDefaults.standard.object(forKey: lifetimeIncomeKey) as? Double) ?? 0
+    }
+    static func loadLifetimeExpenses() -> Double {
+        (UserDefaults.standard.object(forKey: lifetimeExpensesKey) as? Double) ?? 0
+    }
+    static func save(totalIncome: Double, totalExpenses: Double, lifetimeIncome: Double, lifetimeExpenses: Double) {
+        UserDefaults.standard.set(totalIncome, forKey: totalIncomeKey)
+        UserDefaults.standard.set(totalExpenses, forKey: totalExpensesKey)
+        UserDefaults.standard.set(lifetimeIncome, forKey: lifetimeIncomeKey)
+        UserDefaults.standard.set(lifetimeExpenses, forKey: lifetimeExpensesKey)
+    }
+}
+
+// MARK: - ContentView
+struct ContentView: View {
+    @EnvironmentObject private var session: SessionManager
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var selectedTab = 0
+    @State private var selectedPeriod: Period = .daily
+    @State private var shimmerOffset: CGFloat = -300
+    @State private var showAddSheet = false
+    @State private var showAddCardSheet = false
+    @State private var selectedCardDetail: CardInfo?
+    @AppStorage("requireCardUnlock") private var requireCardUnlock = true
+    @State private var cardsLocked = true
+    @State private var selectedCardIndex = 0
+    @State private var transactions: [Transaction] = []
+    @State private var categories: [String] = []
+    @State private var cards: [CardInfo] = []
+    @State private var showCardDailyLimitAlert = false
+    @State private var cardDailyLimitAlertCard: CardInfo?
+    @State private var cardDailyLimitAlertSpent: Double = 0
+    @State private var cardLimitAlertPeriod: SpendingLimitPeriod = .daily
+    @State private var lastLocallyAddedTransactionId: UUID?
+    @State private var supportTickets: [SupportTicket] = []
+    @State private var showSupportSheet = false
+    @State private var showTransactionsSheet = false
+    @State private var cardUnlockInProgress = false
+    @State private var showCardsManagerSheet = false
+    @State private var isLoadingCards = false
+    @State private var isLoadingTransactions = false
+    @State private var isLoadingCategories = false
+    @State private var isLoadingSavings = false
+    @State private var isLoadingTickets = false
+    @State private var cardsLoaded = false
+    @State private var transactionsLoaded = false
+    @State private var categoriesLoaded = false
+    @State private var savingsLoaded = false
+    @State private var ticketsLoaded = false
+    @State private var isRefreshing = false
+    @State private var websocketCancellable: AnyCancellable?
+    @AppStorage("activeTicketId") private var activeTicketId = ""
+    @AppStorage("lastSupportNotificationId") private var lastSupportNotificationId = ""
+    @AppStorage("hasUnreadSupportNotification") private var hasUnreadSupportNotification = false
+    @State private var liveRefreshTask: Task<Void, Never>?
+
+var body: some View {
+    applyRootModifiers(to: mainTabs)
+}
+
+private func applyRootModifiers<Content: View>(to content: Content) -> some View {
+    let view0 = content
+        .preferredColorScheme(.light)
+        .appBackground()
+        .transaction { transaction in
+            if isRefreshing && transaction.animation != nil {
+                transaction.animation = .none
+            }
+        }
+        .animation(isRefreshing ? nil : .easeInOut(duration: 0.25), value: selectedTab)
+
+        let view1 = view0.onAppear {
+            loadPersistedData()
+            cardsLocked = requireCardUnlock
+            if !supportTickets.isEmpty, let token = session.token {
+                Task { await preloadTicketMessages(token: token, tickets: supportTickets) }
+            }
+            refreshFromServer()
+            checkSelectedCardDailyLimit()
+            setupWebSocket()
+            startLiveRefreshLoop()
+            DispatchQueue.main.async { [self] in
+                updateFilteredTransactionsCacheSync()
+            }
+        }
+
+        let view2 = view1.task(id: session.user?.id) {
+            refreshFromServer()
+
+        }
+
+        let view3 = view2.task(id: session.token) {
+            refreshFromServer()
+
+        }
+
+        let view4 = view3
+            .onChange(of: session.user?.id) { oldValue, newValue in
+                if oldValue != nil && newValue == nil {
+
+                    WebSocketManager.shared.disconnect()
+                    websocketCancellable?.cancel()
+                    websocketCancellable = nil
+                    isWebSocketSetup = false
+                    stopLiveRefreshLoop()
+                } else if newValue != nil {
+                    refreshFromServer()
+
+                    isWebSocketSetup = false
+                    setupWebSocket()
+                    startLiveRefreshLoop()
+                }
+            }
+            .onChange(of: session.token) { oldValue, newValue in
+                if oldValue != nil && newValue == nil {
+
+                    WebSocketManager.shared.disconnect()
+                    websocketCancellable?.cancel()
+                    websocketCancellable = nil
+                    isWebSocketSetup = false
+                    stopLiveRefreshLoop()
+                } else if newValue != nil {
+                    refreshFromServer()
+
+                    isWebSocketSetup = false
+                    setupWebSocket()
+                    startLiveRefreshLoop()
+                }
+            }
+            .onChange(of: selectedTab) { _, newTab in
+                if newTab == 0 {
+                    refreshFromServer()
+                }
+            }
+
+	        let view5 = view4
+	        .onChange(of: cards) { _, newCards in
+	            if newCards.isEmpty {
+	                selectedCardIndex = 0
+	            } else if selectedCardIndex >= newCards.count {
+	                selectedCardIndex = max(0, newCards.count - 1)
+	            }
+	            saveCards()
+	            checkSelectedCardDailyLimit()
+	        }
+	            .onChange(of: transactions.count) { _, _ in
+	                saveTransactions()
+	                checkSelectedCardDailyLimit()
+	            }
+	            .onChange(of: selectedCardIndex) { _, _ in
+	                checkSelectedCardDailyLimit()
+	                DispatchQueue.main.async { [self] in
+	                    updateFilteredTransactionsCacheSync()
+	                }
+	            }
+	            .onChange(of: selectedPeriod) { _, _ in
+	                DispatchQueue.main.async { [self] in
+	                    updateFilteredTransactionsCacheSync()
+	                }
+	            }
+	            .onChange(of: transactions.count) { _, _ in
+	                DispatchQueue.main.async { [self] in
+	                    updateFilteredTransactionsCacheSync()
+	                }
+	            }
+	            .onChange(of: showAddSheet) { _, isPresented in
+	                if !isPresented {
+	                    checkLimitAfterLocalTransactionAdd()
+	                }
+	            }
+            .onChange(of: categories) { _, _ in
+                saveCategories()
+            }
+
+	    let view6 = view5
+	        .onChange(of: requireCardUnlock) { _, enabled in
+	            cardsLocked = enabled
+	        }
+
+    let view7 = view6.onChange(of: scenePhase) { _, newPhase in
+        if newPhase == .background {
+            if requireCardUnlock {
+                cardsLocked = true
+            }
+            stopLiveRefreshLoop()
+        } else if newPhase == .active {
+            refreshFromServer()
+
+            startLiveRefreshLoop()
+        } else if newPhase == .inactive {
+            stopLiveRefreshLoop()
+        }
+    }
+    .onDisappear {
+    }
+
+    let view8 = view7.sheet(item: $selectedCardDetail) { card in
+        CardDetailSheet(
+            card: card,
+            onUpdate: { updated in
+                if let idx = cards.firstIndex(where: { $0.id == updated.id }) {
+                    cards[idx] = updated
+                    updateCardRemote(updated)
+                }
+                selectedCardDetail = nil
+            },
+            onDelete: {
+                deleteCard(card)
+                selectedCardDetail = nil
+            }
+        )
+    }
+
+    let view9 = view8.sheet(isPresented: $showSupportSheet) {
+        SupportTicketSheet { subject, detail in
+            guard let userId = session.user?.id, let token = session.token else { return }
+            let ticket = SupportTicket(subject: subject, detail: detail)
+            let localId = ticket.id
+            supportTickets.insert(ticket, at: 0)
+            TicketChatView.seedInitialUserMessage(
+                ticketId: ticket.id.apiString,
+                userId: userId,
+                content: detail
+            )
+
+            Task {
+                do {
+                    let created = try await APIClient.shared.createTicket(
+                        userId: userId,
+                        subject: subject,
+                        initialMessage: detail,
+                        token: token
+                    )
+                    let serverId = created.ticketId
+                    let messages = try await APIClient.shared.fetchTicketMessages(
+                        ticketId: serverId.apiString,
+                        token: token
+                    )
+                    await MainActor.run {
+                        if let index = supportTickets.firstIndex(where: { $0.id == localId }) {
+                            var synced = supportTickets[index]
+                            synced.id = serverId
+                            supportTickets[index] = synced
+                        }
+                        TicketChatView.migrateMessageCache(from: localId.apiString, to: serverId.apiString)
+                        TicketChatView.persistMessagesLocally(ticketId: serverId.apiString, messages: messages)
+                        saveTickets()
+                    }
+                    print("✅ Ticket created successfully")
+                } catch {
+                    await MainActor.run {
+                        supportTickets.removeAll { $0.id == localId }
+                        print("❌ Failed to create ticket: \(error.localizedDescription)")
+                    }
+                }
+            }
+        }
+    }
+
+	    let view10 = view9.alert("Spending limit exceeded", isPresented: $showCardDailyLimitAlert) {
+	        Button("Edit limit") {
+	            if let cardDailyLimitAlertCard {
+	                selectedCardDetail = cardDailyLimitAlertCard
+	            }
+	        }
+	        Button("OK", role: .cancel) {}
+	    } message: {
+	        Text(cardDailyLimitAlertMessage)
+	    }
+
+        let view11 = view10.sheet(isPresented: $showCardsManagerSheet) {
+            CardsTab(
+                cards: $cards,
+                requireCardUnlock: requireCardUnlock,
+                locked: $cardsLocked,
+                showAddCardSheet: $showAddCardSheet,
+                overLimitCardIds: overLimitCardIds,
+                unlock: { userInitiated in
+                    authenticateCards(userInitiated: userInitiated)
+                },
+                onSelect: { card in
+                    selectedCardDetail = card
+                },
+                onSyncCard: { card in syncCard(card) },
+                onDeleteCard: { card in deleteCard(card) }
+            )
+        }
+
+        return view11
+	}
+
+	    private var mainTabs: some View {
+	        TabView(selection: $selectedTab) {
+	            dashboard
+	                .tag(0)
+	                .tabItem { Label("Home", systemImage: "house.fill") }
+	                .onAppear {
+	                    refreshFromServer()
+	                }
+
+	            AIChatTab()
+	                .tag(1)
+	                .tabItem { Label("Assistant", systemImage: "wand.and.stars") }
+	                .environmentObject(session)
+
+	            InsightsTab(
+	                transactions: $transactions,
+	                cards: $cards,
+	                selectedPeriod: $selectedPeriod
+	            )
+	            .tag(2)
+	            .tabItem { Label("Insights", systemImage: "chart.bar.xaxis") }
+	            .environmentObject(session)
+
+	            SettingsTab(
+	                categories: $categories,
+	                requireCardUnlock: $requireCardUnlock,
+	                supportTickets: $supportTickets,
+	                showSupportSheet: $showSupportSheet,
+	                transactions: transactions,
+	                cards: cards,
+	                onToggleCardLock: { enabled in
+	                    requireCardUnlock = enabled
+	                    cardsLocked = enabled
+	                },
+	                onSyncNow: { refreshFromServer() }
+	            )
+            .environmentObject(session)
+            .onAppear {
+                refreshFromServer()
+            }
+            .tag(3)
+            .tabItem { Label("Settings", systemImage: "gearshape.fill") }
+        }
+    }
+
+    private var cardDailyLimitAlertMessage: String {
+        let currencyCode = "EUR"
+        let spentText = cardDailyLimitAlertSpent.formatted(.currency(code: currencyCode))
+        let limitValue = cardDailyLimitAlertCard?.effectiveLimit(for: cardLimitAlertPeriod) ?? 0
+        let limitText = limitValue.formatted(.currency(code: currencyCode))
+        let nickname = cardDailyLimitAlertCard?.nickname.isEmpty == false ? cardDailyLimitAlertCard?.nickname ?? "Card" : "Card"
+        let period = cardLimitAlertPeriod
+        return "You spent \(spentText) this \(period.title.lowercased()) on \(nickname), over your limit of \(limitText)."
+    }
+
+    private var overLimitCardIds: Set<UUID> {
+        let now = Date()
+        var overLimit: Set<UUID> = []
+        for card in cards {
+            guard let primaryLimit = card.primaryLimitForDisplay() else { continue }
+            let (period, limit) = primaryLimit
+            let start = periodStart(for: period, now: now)
+            let spent = spend(for: card.id, since: start)
+            if spent >= limit {
+                print("⚠️ Card \(card.nickname) (\(card.id.uuidString.prefix(8))) is over limit:")
+                print("   Period: \(period.rawValue), Limit: \(limit), Spent: \(spent)")
+                print("   Period start: \(start)")
+                overLimit.insert(card.id)
+            }
+        }
+        return overLimit
+    }
+
+    private func checkSelectedCardDailyLimit() {
+        let now = Date()
+        for card in cards {
+            for period in [SpendingLimitPeriod.daily, .weekly, .monthly] {
+                guard let limit = card.effectiveLimit(for: period), limit > 0 else { continue }
+                let start = periodStart(for: period, now: now)
+                let spent = spend(for: card.id, since: start)
+                guard spent >= limit else { continue }
+
+                let signature = "\(periodKey(from: start))|\(period.rawValue)|\(Int((limit * 100).rounded()))"
+                if storedCardLimitSignature(for: card.id, period: period) == signature { continue }
+                storeCardLimitSignature(signature, for: card.id, period: period)
+
+                cardDailyLimitAlertCard = card
+                cardDailyLimitAlertSpent = spent
+                cardLimitAlertPeriod = period
+                triggerLimitExceededHaptics()
+                showCardDailyLimitAlert = true
+                return
+            }
+        }
+    }
+
+    private func checkLimitAfterLocalTransactionAdd() {
+        guard let txId = lastLocallyAddedTransactionId else { return }
+        lastLocallyAddedTransactionId = nil
+
+        guard let tx = transactions.first(where: { $0.id == txId }) else { return }
+        guard tx.kind == .expense else { return }
+
+        guard let card = cardForTransaction(tx) else { return }
+
+        for period in [SpendingLimitPeriod.daily, .weekly, .monthly] {
+            guard let limit = card.effectiveLimit(for: period), limit > 0 else { continue }
+            let start = periodStart(for: period, now: tx.date)
+            let spent = spend(for: card.id, since: start)
+            guard spent >= limit else { continue }
+
+            let key = "cardLimitAlertLastTx.\(card.id.uuidString).\(period.rawValue).\(periodKey(from: start))"
+            if UserDefaults.standard.string(forKey: key) == tx.id.uuidString { continue }
+            UserDefaults.standard.set(tx.id.uuidString, forKey: key)
+
+            cardDailyLimitAlertCard = card
+            cardDailyLimitAlertSpent = spent
+            cardLimitAlertPeriod = period
+            triggerLimitExceededHaptics()
+            showCardDailyLimitAlert = true
+            return
+        }
+    }
+
+    private func cardForTransaction(_ tx: Transaction) -> CardInfo? {
+        if let cardId = tx.cardId {
+            return cards.first(where: { $0.id == cardId })
+        }
+        if cards.count == 1 { return cards.first }
+        return nil
+    }
+
+    private func utcCalendar() -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar
+    }
+
+    private func spend(for cardId: UUID, since start: Date) -> Double {
+        let includeUnassigned = cards.count == 1 && cards.first?.id == cardId
+        let calendar = utcCalendar()
+
+        let normalizedStart = calendar.startOfDay(for: start)
+        let now = Date()
+        let normalizedNow = calendar.startOfDay(for: now)
+
+        let maxDate = normalizedNow.addingTimeInterval(86400)
+
+        let matchingTransactions = transactions.filter {
+            guard $0.kind == .expense else { return false }
+
+            let cardMatches: Bool
+            if let txCardId = $0.cardId {
+                cardMatches = txCardId == cardId
+            } else {
+                cardMatches = includeUnassigned
+            }
+            guard cardMatches else { return false }
+
+            let txDateStart = calendar.startOfDay(for: $0.date)
+
+            guard txDateStart >= normalizedStart else { return false }
+
+            guard txDateStart <= maxDate else { return false }
+
+            return true
+        }
+
+        let total = matchingTransactions.reduce(0) { $0 + abs($1.amount) }
+
+        if !matchingTransactions.isEmpty {
+            let oldestTx = matchingTransactions.min(by: { $0.date < $1.date })
+            if let oldest = oldestTx, oldest.date < normalizedStart {
+                print("⚠️ WARNING: Counting transaction from before period start!")
+                print("   Period start: \(normalizedStart), Oldest TX: \(oldest.date)")
+            }
+        }
+
+        return total
+    }
+
+    private func periodStart(for period: SpendingLimitPeriod, now: Date) -> Date {
+        let calendar = utcCalendar()
+
+        let nowStartOfDay = calendar.startOfDay(for: now)
+        switch period {
+        case .daily:
+            return nowStartOfDay
+        case .weekly:
+            return calendar.dateInterval(of: .weekOfYear, for: nowStartOfDay)?.start ?? nowStartOfDay
+        case .monthly:
+            return calendar.dateInterval(of: .month, for: nowStartOfDay)?.start ?? nowStartOfDay
+        }
+    }
+
+    private func periodKey(from start: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar.current
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: start)
+    }
+
+    private func storedCardLimitSignature(for cardId: UUID, period: SpendingLimitPeriod) -> String {
+        UserDefaults.standard.string(forKey: "cardLimitAlertSignature.\(cardId.uuidString).\(period.rawValue)") ?? ""
+    }
+
+    private func storeCardLimitSignature(_ signature: String, for cardId: UUID, period: SpendingLimitPeriod) {
+        UserDefaults.standard.set(signature, forKey: "cardLimitAlertSignature.\(cardId.uuidString).\(period.rawValue)")
+    }
+
+    private func triggerLimitExceededHaptics() {
+#if canImport(UIKit)
+
+        guard !isRefreshing else { return }
+        let generator = UINotificationFeedbackGenerator()
+        generator.prepare()
+        generator.notificationOccurred(.warning)
+#endif
+    }
+
+    private func startLiveRefreshLoop() {
+        guard liveRefreshTask == nil else { return }
+
+        liveRefreshTask = Task { @MainActor in
+            while !Task.isCancelled {
+                if scenePhase == .active && session.isAuthenticated {
+                    refreshFromServer()
+                }
+                try? await Task.sleep(nanoseconds: AppConstants.Refresh.fullRefreshNanoseconds)
+            }
+        }
+    }
+
+    private func stopLiveRefreshLoop() {
+        liveRefreshTask?.cancel()
+        liveRefreshTask = nil
+    }
+
+	    private func refreshFromServer() {
+	        guard !isRefreshing else { return }
+
+	        guard let userId = session.user?.id else {
+	            print("⚠️ refreshFromServer: No user ID")
+	            if cards.isEmpty {
+	                restoreCardsFromDisk()
+	            }
+	            if transactions.isEmpty {
+	                restoreTransactionsFromDisk()
+	            }
+	            return
+	        }
+
+	        let token = session.token
+	        print("🔄 refreshFromServer: Starting refresh for userId: \(userId), hasToken: \(token != nil)")
+
+	        isRefreshing = true
+
+	        cardsLoaded = false
+	        transactionsLoaded = false
+	        categoriesLoaded = false
+	        savingsLoaded = false
+	        ticketsLoaded = false
+	        isLoadingCards = true
+	        isLoadingTransactions = true
+	        isLoadingCategories = true
+	        isLoadingSavings = true
+	        isLoadingTickets = true
+
+	        Task {
+	            if let token = token, !session.sessionValidated {
+	                do {
+	                    _ = try await APIClient.shared.validateSession(token: token)
+	                    print("✅ Session validated")
+	                    await MainActor.run {
+	                        session.sessionValidated = true
+	                    }
+	                } catch {
+	                    print("❌ Session validation failed: \(error.localizedDescription)")
+
+						if let apiError = error as? APIError,
+						   case .requestFailed(let message) = apiError,
+						   (message.contains("401") || message.contains("Unauthorized") || message.contains("invalid session")) {
+							await MainActor.run {
+								session.logout()
+							}
+							return
+						}
+
+	                    await MainActor.run {
+	                        isLoadingCards = false
+	                        isLoadingTransactions = false
+	                        isLoadingCategories = false
+	                        isLoadingSavings = false
+	                        isLoadingTickets = false
+	                        isRefreshing = false
+	                        if self.cards.isEmpty {
+	                            restoreCardsFromDisk()
+	                        }
+	                        if self.transactions.isEmpty {
+	                            restoreTransactionsFromDisk()
+	                        }
+	                    }
+	                    return
+	                }
+	            } else if token == nil {
+	                print("⚠️ No token provided for refresh")
+	                await MainActor.run {
+	                    isRefreshing = false
+	                }
+	                return
+	            }
+
+	            async let cardsTask = APIClient.shared.fetchCards(userId: userId, token: token)
+	            async let transactionsTask = APIClient.shared.fetchTransactions(userId: userId, token: token)
+	            async let categoriesTask = APIClient.shared.fetchCategories(userId: userId, token: token)
+	            async let savingsTask = APIClient.shared.fetchSavingsGoal(userId: userId, token: token)
+	            async let ticketsTask = APIClient.shared.fetchTickets(userId: userId, token: token)
+
+	            let remoteCards = try? await cardsTask
+	            await MainActor.run {
+	                isLoadingCards = false
+	                cardsLoaded = remoteCards != nil
+	                if let cards = remoteCards {
+	                    print("✅ Cards loaded: \(cards.count) cards")
+	                } else {
+	                    print("❌ Cards failed to load")
+	                }
+	            }
+
+	            let remoteTx = try? await transactionsTask
+	            await MainActor.run {
+	                isLoadingTransactions = false
+	                transactionsLoaded = remoteTx != nil
+	                if let tx = remoteTx {
+	                    print("✅ Transactions loaded: \(tx.count) transactions")
+	                } else {
+	                    print("❌ Transactions failed to load")
+	                }
+	            }
+
+	            let remoteCategories = try? await categoriesTask
+	            await MainActor.run {
+	                isLoadingCategories = false
+	                categoriesLoaded = remoteCategories != nil
+	                if let categories = remoteCategories {
+	                    print("✅ Categories loaded: \(categories.count) categories")
+	                } else {
+	                    print("❌ Categories failed to load")
+	                }
+	            }
+
+	            let remoteSavings = try? await savingsTask
+	            await MainActor.run {
+	                isLoadingSavings = false
+	                savingsLoaded = remoteSavings != nil
+	                if let savings = remoteSavings {
+	                    print("✅ Savings loaded: \(savings.goalAmount)")
+	                } else {
+	                    print("❌ Savings failed to load")
+	                }
+	            }
+
+	            let remoteTickets = try? await ticketsTask
+	            await MainActor.run {
+	                isLoadingTickets = false
+	                ticketsLoaded = remoteTickets != nil
+	                if let tickets = remoteTickets {
+	                    print("✅ Tickets loaded: \(tickets.count) tickets")
+	                } else {
+	                    print("❌ Tickets failed to load")
+	                }
+	            }
+
+	            await MainActor.run {
+	                if let cards = remoteCards, !cards.isEmpty {
+	                    self.cards = mergeCardsPreservingOrder(remote: cards, local: self.cards)
+	                    saveCards()
+	                } else if self.cards.isEmpty {
+	                    restoreCardsFromDisk()
+	                }
+
+	                if let transactions = remoteTx, !transactions.isEmpty {
+	                    let normalized = attachSingleCardId(transactions)
+	                    let merged = mergeTransactionsWithLocal(normalized)
+	                    self.transactions = merged
+	                    saveTransactions()
+	                } else if self.transactions.isEmpty {
+	                    restoreTransactionsFromDisk()
+	                }
+
+	                if let categories = remoteCategories {
+	                    self.categories = categories
+	                    saveCategories()
+	                }
+
+                if let savings = remoteSavings {
+                    if savings.goalAmount > 0 {
+	                        UserDefaults.standard.set(true, forKey: "showSavingsCard")
+	                    }
+	                    NotificationCenter.default.post(
+	                        name: NSNotification.Name("SavingsGoalUpdated"),
+	                        object: nil,
+	                        userInfo: ["goalAmount": savings.goalAmount, "goalPeriod": savings.goalPeriod.rawValue]
+	                    )
+	                }
+
+	                if let tickets = remoteTickets {
+	                    if !tickets.isEmpty {
+	                        self.supportTickets = tickets
+	                        self.saveTickets()
+	                        if let token = token {
+	                            Task { await self.preloadTicketMessages(token: token, tickets: tickets) }
+	                        }
+	                    } else {
+	                        print("⚠️ Tickets API returned empty array, keeping existing tickets")
+					}
+				} else {
+					print("⚠️ Tickets failed to load, keeping existing tickets")
+				}
+
+	                self.isRefreshing = false
+	            }
+	        }
+	    }
+
+    private var dashboard: some View {
+        let income = totalIncome
+        let net = netBalance
+        let breakdown = categoryBreakdown
+        let incomeBreakdown = incomeCategoryBreakdown
+        let filtered = filteredTransactions
+        let name = session.user?.firstName.isEmpty == false ? (session.user?.firstName ?? "there") : "there"
+
+        return ZStack(alignment: .topTrailing) {
+            HomeDashboard(
+                userId: session.user?.id,
+	            firstName: name,
+	            selectedPeriod: $selectedPeriod,
+	            shimmerOffset: $shimmerOffset,
+	            transactions: $transactions,
+	            showAddSheet: $showAddSheet,
+	            cardsLocked: $cardsLocked,
+	            showAddCardSheet: $showAddCardSheet,
+	            cards: $cards,
+	            overLimitCardIds: overLimitCardIds,
+	            selectedCardIndex: $selectedCardIndex,
+	            showTransactionsSheet: $showTransactionsSheet,
+	            categories: categories,
+            netBalance: net,
+            totalIncome: income,
+            totalExpenses: totalExpensesMagnitude,
+            lifetimeIncome: lifetimeIncome,
+            lifetimeExpenses: lifetimeExpensesMagnitude,
+            incomeCategoryBreakdown: incomeBreakdown,
+            expenseCategoryBreakdown: breakdown,
+            filteredTransactions: filtered,
+	            onAddCard: { showAddCardSheet = true },
+            onAddTransaction: {
+                if cards.isEmpty {
+                    withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                        showAddCardSheet = true
+                    }
+                } else {
+                    withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                        showAddSheet = true
+                    }
+                }
+            },
+            onNewCategory: { name in
+                addCategoryIfNeeded(name)
+                syncCategoryRemote(name)
+            },
+	            onSyncTransaction: { tx in
+	                lastLocallyAddedTransactionId = tx.id
+	                syncTransaction(tx)
+	            },
+	            onSyncCard: { card in syncCard(card) },
+	            onAdjustBalance: { tx in adjustBalance(for: tx) },
+	            onOpenCards: {
+	                withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+	                    showCardsManagerSheet = true
+	                }
+	            }
+	        )
+        }
+    }
+
+    private func authenticateCards(userInitiated: Bool) {
+        if !requireCardUnlock {
+            cardsLocked = false
+            return
+        }
+        guard !cards.isEmpty else {
+            cardsLocked = false
+            return
+        }
+        guard !cardUnlockInProgress else { return }
+        cardUnlockInProgress = true
+
+        let context = LAContext()
+        var error: NSError?
+        if context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) {
+            context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Unlock your cards") { success, _ in
+                DispatchQueue.main.async {
+                    cardsLocked = !success
+                    cardUnlockInProgress = false
+                }
+            }
+        } else {
+            cardsLocked = false
+            cardUnlockInProgress = false
+        }
+    }
+
+    @State private var cachedFilteredIndices: [Int] = []
+    @State private var cachedTotalIncome: Double = DashboardPersistence.loadTotalIncome()
+    @State private var cachedTotalExpenses: Double = DashboardPersistence.loadTotalExpenses()
+    @State private var cachedCategoryBreakdown: [String: Double] = [:]
+    @State private var cachedIncomeCategoryBreakdown: [String: Double] = [:]
+    @State private var cachedLifetimeIncome: Double = DashboardPersistence.loadLifetimeIncome()
+    @State private var cachedLifetimeExpenses: Double = DashboardPersistence.loadLifetimeExpenses()
+    @State private var cachePeriod: Period = .monthly
+    @State private var cacheCardIndex: Int = 0
+    @State private var cacheTransactionCount: Int = 0
+
+    private var periodStart: Date {
+        let calendar = Calendar.current
+        let now = Date()
+        switch selectedPeriod {
+        case .daily:
+            return calendar.startOfDay(for: now)
+        case .weekly:
+            return calendar.date(byAdding: .day, value: -6, to: calendar.startOfDay(for: now)) ?? now
+        case .biweekly:
+            return calendar.date(byAdding: .day, value: -13, to: calendar.startOfDay(for: now)) ?? now
+        case .monthly:
+            return calendar.date(byAdding: .month, value: -1, to: calendar.startOfDay(for: now)) ?? now
+        case .quarterly:
+            return calendar.date(byAdding: .month, value: -3, to: calendar.startOfDay(for: now)) ?? now
+        case .semiannual:
+            return calendar.date(byAdding: .month, value: -6, to: calendar.startOfDay(for: now)) ?? now
+        case .nineMonth:
+            return calendar.date(byAdding: .month, value: -9, to: calendar.startOfDay(for: now)) ?? now
+        case .yearly:
+            return calendar.date(byAdding: .year, value: -1, to: calendar.startOfDay(for: now)) ?? now
+        }
+    }
+
+    private var selectedCardId: UUID? {
+        cards.indices.contains(selectedCardIndex) ? cards[selectedCardIndex].id : nil
+    }
+
+    private var filteredTransactions: [Transaction] {
+        if cachedFilteredIndices.isEmpty {
+            return []
+        }
+        return cachedFilteredIndices.map { transactions[$0] }
+    }
+
+    private func updateFilteredTransactionsCache() {
+        DispatchQueue.main.async { [self] in
+            updateFilteredTransactionsCacheSync()
+        }
+    }
+
+    private func updateFilteredTransactionsCacheSync() {
+        let needsUpdate = cachePeriod != selectedPeriod ||
+                         cacheCardIndex != selectedCardIndex ||
+                         cacheTransactionCount != transactions.count ||
+                         cachedFilteredIndices.isEmpty
+
+        guard needsUpdate else { return }
+
+        var indices: [Int] = []
+        indices.reserveCapacity(transactions.count)
+        let periodStartDate = periodStart
+        let calendar = Calendar.current
+        let periodStartNormalized = calendar.startOfDay(for: periodStartDate)
+        let cardId = selectedCardId
+        let allUnassigned = transactions.allSatisfy { $0.cardId == nil }
+        let allowUnassigned = cards.count == 1 || allUnassigned
+
+        for (index, tx) in transactions.enumerated() {
+            let txDateStart = calendar.startOfDay(for: tx.date)
+
+            guard txDateStart >= periodStartNormalized else { continue }
+
+            if let cardId = cardId {
+                if tx.cardId == cardId {
+                    indices.append(index)
+                } else if tx.cardId == nil && allowUnassigned {
+                    indices.append(index)
+                }
+            } else {
+                indices.append(index)
+            }
+        }
+
+        cachePeriod = selectedPeriod
+        cacheCardIndex = selectedCardIndex
+        cacheTransactionCount = transactions.count
+        cachedFilteredIndices = indices
+
+        var income: Double = 0
+        var expenses: Double = 0
+        var expenseBreakdown: [String: Double] = [:]
+        var incomeBreakdown: [String: Double] = [:]
+
+        for index in indices {
+            let tx = transactions[index]
+            if tx.kind == .income {
+                income += tx.amount
+                incomeBreakdown[tx.category, default: 0] += abs(tx.amount)
+            } else {
+                expenses += abs(tx.amount)
+                expenseBreakdown[tx.category, default: 0] += abs(tx.amount)
+            }
+        }
+
+        var lifetimeInc: Double = 0
+        var lifetimeExp: Double = 0
+        for tx in transactions {
+            if tx.kind == .income {
+                lifetimeInc += tx.amount
+            } else {
+                lifetimeExp += abs(tx.amount)
+            }
+        }
+
+        let valuesChanged = income != cachedTotalIncome || expenses != cachedTotalExpenses
+            || lifetimeInc != cachedLifetimeIncome || lifetimeExp != cachedLifetimeExpenses
+        if valuesChanged {
+            cachedTotalIncome = income
+            cachedTotalExpenses = expenses
+            cachedLifetimeIncome = lifetimeInc
+            cachedLifetimeExpenses = lifetimeExp
+            DashboardPersistence.save(
+                totalIncome: income,
+                totalExpenses: expenses,
+                lifetimeIncome: lifetimeInc,
+                lifetimeExpenses: lifetimeExp
+            )
+        }
+        cachedCategoryBreakdown = expenseBreakdown
+        cachedIncomeCategoryBreakdown = incomeBreakdown
+    }
+
+    private var lifetimeIncome: Double {
+        return cachedLifetimeIncome
+    }
+
+    private var lifetimeExpensesMagnitude: Double {
+        return cachedLifetimeExpenses
+    }
+
+    private var totalIncome: Double {
+        return cachedTotalIncome
+    }
+
+    private var totalExpensesMagnitude: Double {
+        return cachedTotalExpenses
+    }
+
+    private var netBalance: Double {
+        return cachedTotalIncome - cachedTotalExpenses
+    }
+
+    private var categoryBreakdown: [String: Double] {
+        return cachedCategoryBreakdown
+    }
+
+    private var incomeCategoryBreakdown: [String: Double] {
+        return cachedIncomeCategoryBreakdown
+    }
+
+	    private func loadPersistedData() {
+        restoreCardsFromDisk()
+        restoreTransactionsFromDisk()
+        restoreCategoriesFromDisk()
+        restoreTicketsFromDisk()
+        updateFilteredTransactionsCacheSync()
+
+	        refreshFromServer()
+    }
+
+    @MainActor
+    private func restoreTicketsFromDisk() {
+        if let storedTickets: [SupportTicket] = SecureStore.load([SupportTicket].self, key: "supportTickets"), !storedTickets.isEmpty {
+            supportTickets = storedTickets
+        }
+    }
+
+    private func saveTickets() {
+        SecureStore.save(supportTickets, key: "supportTickets")
+    }
+
+	    @MainActor
+	    private func restoreCardsFromDisk() {
+	        if let storedCards: [CardInfo] = SecureStore.load([CardInfo].self, key: "cards"), !storedCards.isEmpty {
+	            cards = storedCards
+	        }
+	    }
+
+	    private func mergeCardsPreservingOrder(remote: [CardInfo], local: [CardInfo]) -> [CardInfo] {
+	        guard !local.isEmpty else { return remote }
+	        let remoteById = Dictionary(uniqueKeysWithValues: remote.map { ($0.id, $0) })
+	        var result: [CardInfo] = []
+	        result.reserveCapacity(remote.count)
+	        for c in local {
+	            if let r = remoteById[c.id] {
+	                result.append(r)
+	            }
+	        }
+	        for r in remote where !result.contains(where: { $0.id == r.id }) {
+	            result.append(r)
+	        }
+	        return result
+	    }
+
+    @MainActor
+    private func restoreTransactionsFromDisk() {
+        if let storedTransactions: [Transaction] = SecureStore.load([Transaction].self, key: "transactions") {
+            transactions = storedTransactions
+        }
+    }
+
+    @MainActor
+    private func attachSingleCardId(_ remote: [Transaction]) -> [Transaction] {
+        guard cards.count == 1, let cardId = cards.first?.id else { return remote }
+        return remote.map { tx in
+            guard tx.cardId == nil else { return tx }
+            var updated = tx
+            updated.cardId = cardId
+            return updated
+        }
+    }
+
+    @MainActor
+    private func mergeTransactionsWithLocal(_ remote: [Transaction]) -> [Transaction] {
+        let localMap = Dictionary(uniqueKeysWithValues: transactions.map { ($0.id, $0) })
+        return remote.map { tx in
+            guard tx.cardId == nil, let local = localMap[tx.id], let cardId = local.cardId else { return tx }
+            var updated = tx
+            updated.cardId = cardId
+            return updated
+        }
+    }
+
+    @MainActor
+    private func restoreCategoriesFromDisk() {
+        if let storedCategories: [String] = SecureStore.load([String].self, key: "categories") {
+            categories = storedCategories
+        } else {
+            categories = ["Dining", "Groceries", "Travel", "Bills", "Shopping", "Transfers"]
+        }
+    }
+
+    private func saveCards() {
+        SecureStore.save(cards, key: "cards")
+    }
+
+    private func saveTransactions() {
+        SecureStore.save(transactions, key: "transactions")
+    }
+
+    private func saveCategories() {
+        SecureStore.save(categories, key: "categories")
+    }
+
+    private func addCategoryIfNeeded(_ category: String) {
+        let trimmed = category.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if !categories.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+            categories.append(trimmed)
+        }
+    }
+
+    private func syncCategoryRemote(_ name: String) {
+        guard let userId = session.user?.id else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        Task {
+            do {
+                let remote = try await APIClient.shared.createCategory(userId: userId, name: trimmed)
+                await MainActor.run {
+                    categories = remote
+                    saveCategories()
+                    refreshFromServer()
+                }
+            } catch {
+            }
+        }
+    }
+
+    private func syncCard(_ card: CardInfo) {
+        guard let userId = session.user?.id else { return }
+        Task {
+            do {
+                try await APIClient.shared.saveCard(userId: userId, card: card)
+                await MainActor.run {
+                    refreshFromServer()
+                }
+            } catch {
+            }
+        }
+    }
+
+    private func syncTransaction(_ tx: Transaction) {
+        guard let userId = session.user?.id else { return }
+        var outbound = tx
+        if outbound.cardId == nil {
+            if cards.count == 1 {
+                outbound.cardId = cards.first?.id
+            } else if cards.indices.contains(selectedCardIndex) {
+                outbound.cardId = cards[selectedCardIndex].id
+            }
+        }
+        guard outbound.cardId != nil else {
+            return
+        }
+        Task {
+            do {
+                try await APIClient.shared.saveTransaction(userId: userId, transaction: outbound)
+                await MainActor.run {
+                    refreshFromServer()
+                }
+            } catch {
+            }
+        }
+    }
+
+    private func updateCardRemote(_ card: CardInfo) {
+        guard let userId = session.user?.id else { return }
+        Task {
+            do {
+                try await APIClient.shared.updateCard(userId: userId, card: card)
+                await MainActor.run {
+                    refreshFromServer()
+                }
+            } catch {
+            }
+        }
+    }
+
+    private func deleteCardRemote(_ card: CardInfo) {
+        guard let userId = session.user?.id else { return }
+        Task {
+            do {
+                try await APIClient.shared.deleteCard(userId: userId, cardId: card.id)
+                await MainActor.run {
+                    refreshFromServer()
+                }
+            } catch {
+            }
+        }
+    }
+
+    private func deleteCard(_ card: CardInfo) {
+        cards.removeAll { $0.id == card.id }
+        deleteCardRemote(card)
+    }
+
+    private func adjustBalance(for transaction: Transaction) {
+        guard !cards.isEmpty else { return }
+        let targetId = transaction.cardId ?? (cards.indices.contains(selectedCardIndex) ? cards[selectedCardIndex].id : nil)
+        guard let cardId = targetId, let idx = cards.firstIndex(where: { $0.id == cardId }) else { return }
+        var card = cards[idx]
+        card.balance = (card.balance ?? 0) + transaction.amount
+        cards[idx] = card
+        updateCardRemote(card)
+    }
+
+    // MARK: - WebSocket Real-time Updates
+
+    @State private var isWebSocketSetup = false
+
+    private func setupWebSocket() {
+        guard let token = session.token, let userId = session.user?.id else {
+
+            if isWebSocketSetup {
+                WebSocketManager.shared.disconnect()
+                websocketCancellable?.cancel()
+                websocketCancellable = nil
+                isWebSocketSetup = false
+            }
+            return
+        }
+
+
+        guard !isWebSocketSetup else { return }
+
+
+        WebSocketManager.shared.disconnect()
+        websocketCancellable?.cancel()
+
+
+        WebSocketManager.shared.connect(
+            token: token,
+            userId: userId,
+            streamType: .transactions
+        )
+
+
+        websocketCancellable = WebSocketManager.shared.messages
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { [self] completion in
+                    if case .failure(let error) = completion {
+                        print("[WebSocket] Error: \(error.localizedDescription)")
+
+                        isWebSocketSetup = false
+                    }
+                },
+                receiveValue: { [self] message in
+                    handleWebSocketMessage(message)
+                }
+            )
+
+        isWebSocketSetup = true
+    }
+
+    private func handleWebSocketMessage(_ message: WebSocketMessage) {
+        if message.type == "ticket", let data = message.data,
+           let ticketId = data["id"]?.value as? String,
+           let statusString = data["status"]?.value as? String,
+           let status = SupportTicket.Status(rawValue: statusString.lowercased()),
+           let uuid = UUID(uuidString: ticketId) {
+            applySupportTicketStatus(ticketId: uuid, status: status)
+            return
+        }
+
+        guard let data = message.data else { return }
+
+
+        if let transactionData = data["transaction"]?.value as? [String: Any] {
+            handleTransactionUpdate(transactionData)
+        }
+
+        if let messageData = data["message"]?.value as? [String: Any],
+           let ticketMessage = decodeTicketMessage(messageData) {
+            TicketChatView.appendMessageToCache(ticketId: ticketMessage.ticketId, message: ticketMessage)
+            if ticketMessage.senderType == "support" {
+                scheduleLocalSupportNotification(for: ticketMessage)
+            }
+        }
+
+
+        if let cardData = data["card"]?.value as? [String: Any] {
+            handleCardUpdate(cardData)
+        }
+
+
+        if message.type == "transaction_created" || message.type == "transaction_updated" {
+            if let transactionData = data["transaction"]?.value as? [String: Any] {
+                handleTransactionUpdate(transactionData)
+            }
+        } else if message.type == "transaction_deleted" {
+            if let transactionIdString = data["transactionId"]?.value as? String,
+               let transactionId = UUID(uuidString: transactionIdString) {
+                transactions.removeAll { $0.id == transactionId }
+                saveTransactions()
+                updateFilteredTransactionsCacheSync()
+            }
+        }
+    }
+
+    private func handleTransactionUpdate(_ transactionData: [String: Any]) {
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: transactionData),
+              let transaction = try? JSONDecoder().decode(Transaction.self, from: jsonData) else {
+            return
+        }
+
+
+        if let index = transactions.firstIndex(where: { $0.id == transaction.id }) {
+
+            transactions[index] = transaction
+        } else {
+
+            transactions.insert(transaction, at: 0)
+        }
+
+
+        transactions.sort { $0.date > $1.date }
+
+
+        if transactions.count > 1000 {
+            transactions = Array(transactions.prefix(1000))
+        }
+
+        saveTransactions()
+        checkSelectedCardDailyLimit()
+        updateFilteredTransactionsCacheSync()
+    }
+
+    private func handleCardUpdate(_ cardData: [String: Any]) {
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: cardData),
+              let card = try? JSONDecoder().decode(CardInfo.self, from: jsonData) else {
+            return
+        }
+
+
+        if let index = cards.firstIndex(where: { $0.id == card.id }) {
+
+            cards[index] = card
+        } else {
+
+            cards.append(card)
+        }
+
+        saveCards()
+        checkSelectedCardDailyLimit()
+    }
+
+    private func decodeTicketMessage(_ data: [String: Any]) -> APIClient.TicketMessage? {
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: data) else { return nil }
+        return try? JSONDecoder().decode(APIClient.TicketMessage.self, from: jsonData)
+    }
+
+    @MainActor
+    private func applySupportTicketStatus(ticketId: UUID, status: SupportTicket.Status) {
+        if supportTickets.updateTicketStatus(id: ticketId, to: status) {
+            saveTickets()
+        }
+    }
+
+    private func preloadTicketMessages(token: String, tickets: [SupportTicket]) async {
+        for ticket in tickets {
+            guard !Task.isCancelled else { return }
+            do {
+                let messages = try await APIClient.shared.fetchTicketMessages(ticketId: ticket.id.apiString, token: token)
+                await MainActor.run {
+                    TicketChatView.persistMessagesLocally(ticketId: ticket.id.apiString, messages: messages)
+                }
+            } catch {}
+        }
+    }
+
+    private func scheduleLocalSupportNotification(for message: APIClient.TicketMessage) {
+        if activeTicketId.lowercased() == message.ticketId.lowercased() {
+            return
+        }
+        if message.readByUserAt != nil {
+            return
+        }
+        if hasUnreadSupportNotification {
+            return
+        }
+        if lastSupportNotificationId == message.id {
+            return
+        }
+        hasUnreadSupportNotification = true
+        lastSupportNotificationId = message.id
+        let content = UNMutableNotificationContent()
+        content.title = "Support replied"
+        content.body = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        content.sound = .default
+
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        let request = UNNotificationRequest(identifier: "support-\(message.id)", content: content, trigger: trigger)
+        UNUserNotificationCenter.current().add(request)
+    }
+
+}
